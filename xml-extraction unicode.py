@@ -21,13 +21,12 @@ class file:
         self.pageConfidence = pageConfidence # from extractFile
         self.OCRSoftware = OCRSoftware       # from extractFile
         self.text = text                     # from extractFile
-        self.tokenizedText = tokenizedText   # from extractFile
+        self.tokenizedText = tokenizedText   # from extractFile, no redundant copy in pages
 
 def createDatabase(dbname):
     # TODO: create database and call parsing function to create table
     connection = sqlite3.connect(f"{dbname}")
     cursor = connection.cursor()
-    checkCursor = connection.cursor() # second cursor handles SELECT check for file existence
     # filepath example: ...\UCB\nws_ShinSekai Asahi_The New World Sun\1940\05\05_01
     cursor.execute("""CREATE TABLE IF NOT EXISTS pages (
                    filepath TEXT NOT NULL,
@@ -36,24 +35,51 @@ def createDatabase(dbname):
                    pageNumber INTEGER,
                    pageConfidence REAL,
                    OCRSoftware TEXT,
-                   text TEXT,
-                   tokenizedText TEXT
+                   text TEXT
                    )""")
     # choose text column for indexing since that's likely what we'll do our phrase searches on
     # specify content location to avoid duplicating all of the database text locally
     # content_rowid uses implicit rowid that SQLite assigns each row
-    # trigram enables us to do substring search on Japanese text without a linguistic tokenizer;
-    # strings are accessible in overlapping 3 character sequences -> "二世" might be too short!
+    # unicode splits on whitespace, fugashi splits logical phrases with whitespaces
+    # join FTS5 table with original to link tokenizedText and other metadata
+    # contentless table means tokenizedText thrown away after reverse-index generated
+    # but can't use snippet() or highlight(), bc only position not text stored, join to recreate snippet
     cursor.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts
-                   USING fts5(tokenizedText, content="pages", content_rowid="rowid", tokenize="unicode61")""")
+                   USING fts5(tokenizedText, content="", content_rowid="rowid", tokenize="unicode61")""")
     # EDIT r"UCB" VALUE TO CONFORM TO YOUR RELATIVE FOLDER LOCATION (note example above)
-    root_location = os.path.join(SCRIPT_DIR, r"UCB") # smartly handles OS-dependent path creation
-    cursor.executemany("INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?, ?, ?)", directoryParse(root_location, checkCursor)) # raw string
-    cursor.execute("INSERT INTO pages_fts(rowid, tokenizedText) SELECT rowid, tokenizedText FROM pages") # pages_fts is basically an index on pages
-    connection.commit()
+    rootLocation = os.path.join(SCRIPT_DIR, r"UCB") # smartly handles OS-dependent path creation
+    alreadyIndexed = set() # good for re-running after a crash, skip already scanned files
+    cursor.execute("SELECT filepath FROM pages")
+    alreadyIndexed = {row[0] for row in cursor.fetchall()}
+    batchSize = 100 # For every 100 files, upload and commit for crash safety (and while fitting in memory)
+    batchPages = []
+    batchFTS = []
+    for row in directoryParse(rootLocation, alreadyIndexed):
+        # row = (filePath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text, tokenizedText)
+        batchPages.append(row[:7]) #exclude tokenizedText
+        batchFTS.append(row[7]) # just tokenizedText
+        if (len(batchPages)) >= batchSize:
+            flushToDisk(cursor, batchPages, batchFTS)
+            batchPages.clear()
+            batchFTS.clear()
+            connection.commit()
+    if (len(batchPages) > 0): # at end of directory tree, flush any partial final batches
+        flushToDisk(cursor, batchPages, batchFTS)
+        connection.commit()
     connection.close()
 
-def directoryParse(dirRootPath, checkCursor):
+def flushToDisk(cursor, batchPages, batchFTS):
+    cursor.executemany("INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?, ?)", batchPages) # raw string
+    firstRowID = cursor.lastrowid - len(batchPages) + 1 # get the row ids assigned to pages, and match them to FTS entries
+    i = 0
+    ftsRows = []
+    for row in batchFTS:
+        ftsRows.append((firstRowID + i, row))
+        i += 1
+    cursor.executemany("INSERT INTO pages_fts(rowid, tokenizedText) VALUES (?, ?)", ftsRows) # pages_fts is basically an index on pages
+
+
+def directoryParse(dirRootPath, alreadyIndexed):
     # TODO: loop through all newspapers, dates, and file pages to generate each full entry
     if (not os.path.isdir(dirRootPath)): 
         print(f"'{dirRootPath}' is not a valid directory.")
@@ -64,8 +90,7 @@ def directoryParse(dirRootPath, checkCursor):
             if (fileName.lower().endswith("xml")):
                 filePath = os.path.join(dirRoot, fileName)
                 # checking if the filePath has already been inserted, if so then skip processing
-                checkCursor.execute("SELECT 1 FROM pages WHERE filepath = ?", [filePath]) # don't need to select all row data to check existence; convert all characters into a single tuple
-                if (checkCursor.fetchone() is not None):
+                if (filePath in alreadyIndexed):
                     print(f"skip {filePath}")
                     continue
                 # parts = dirRoot.split(os.sep) # useful split, selects separation character based on OS
@@ -136,4 +161,5 @@ def extractFile(entry, filePath):
 
 # extractFile(file(), "nws_19350805_0002.xml") # check that file's attributes are correctly scanned
 # createDatabase("test_tnw_unicode_version.db") # As I run this, I only have the tnw_ShinSekai_The New World folder inside the relative directory \UCB
-createDatabase("test_tnw+nws_unicode_version.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
+# createDatabase("test_tnw+nws_unicode_version.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
+createDatabase("test_newspaper.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
