@@ -10,7 +10,11 @@ pip show fugashi
 pip uninstall fugashi unidic-lite
 ```
 
-run xml-extraction unicode.py in order to first generate a reusable indexed database file.
+run xml-extraction-unicode.py in order to first generate a reusable indexed database file.
+
+if database creation fails or crashes at any point, feel free to re-run the extraction python file. It will continue where it left off.
+
+If any files are to be added, deleted, or updated, it's advisable to create a new database file from scratch via the extractor.
 
 
 ## Notes:

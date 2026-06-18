@@ -13,7 +13,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 class file:
     # TODO: decide what metadata we should collect from the files
     # Technically will likely never initialize an entry with these values, except manually
-    def __init__(self, filePath=None, newspaper=None, date=None, pageNumber=None, pageConfidence=None, OCRSoftware=None, text=None, tokenizedText=None):
+    def __init__(self, id=None, filePath=None, newspaper=None, date=None, pageNumber=None, pageConfidence=None, OCRSoftware=None, text=None, tokenizedText=None):
+        self.id = id                         # from flushToDisk
         self.filePath = filePath             # from loop parse
         self.newspaper = newspaper           # from loop parse
         self.date = date                     # from extractFile
@@ -29,6 +30,7 @@ def createDatabase(dbname):
     cursor = connection.cursor()
     # filepath example: ...\UCB\nws_ShinSekai Asahi_The New World Sun\1940\05\05_01
     cursor.execute("""CREATE TABLE IF NOT EXISTS pages (
+                   id INTEGER PRIMARY KEY,
                    filepath TEXT NOT NULL,
                    newspaper TEXT,
                    date TEXT,
@@ -39,7 +41,8 @@ def createDatabase(dbname):
                    )""")
     # choose text column for indexing since that's likely what we'll do our phrase searches on
     # specify content location to avoid duplicating all of the database text locally
-    # content_rowid uses implicit rowid that SQLite assigns each row
+    # content_rowid (currently assigned but ignored) by default uses implicit rowid that SQLite assigns each row,
+    # in current state, pages and pages_fts aligned via flushToDisk
     # unicode splits on whitespace, fugashi splits logical phrases with whitespaces
     # join FTS5 table with original to link tokenizedText and other metadata
     # contentless table means tokenizedText thrown away after reverse-index generated
@@ -48,16 +51,17 @@ def createDatabase(dbname):
                    USING fts5(tokenizedText, content="", content_rowid="rowid", tokenize="unicode61")""")
     # EDIT r"UCB" VALUE TO CONFORM TO YOUR RELATIVE FOLDER LOCATION (note example above)
     rootLocation = os.path.join(SCRIPT_DIR, r"UCB") # smartly handles OS-dependent path creation
-    alreadyIndexed = set() # good for re-running after a crash, skip already scanned files
     cursor.execute("SELECT filepath FROM pages")
-    alreadyIndexed = {row[0] for row in cursor.fetchall()}
+    alreadyIndexed = {row[0] for row in cursor.fetchall()} # good for re-running after a crash, skip already scanned files
+    cursor.execute("SELECT COALESCE(MAX(id), 0) FROM pages") # use explicit ID we assigned
+    nextID = cursor.fetchone()[0] + 1
     batchSize = 100 # For every 100 files, upload and commit for crash safety (and while fitting in memory)
     batchPages = []
     batchFTS = []
-    for row in directoryParse(rootLocation, alreadyIndexed):
+    for row in directoryParse(rootLocation, alreadyIndexed, nextID):
         # row = (filePath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text, tokenizedText)
-        batchPages.append(row[:7]) #exclude tokenizedText
-        batchFTS.append(row[7]) # just tokenizedText
+        batchPages.append(row[:8]) #exclude tokenizedText
+        batchFTS.append((row[0], row[8])) # just id and tokenizedText
         if (len(batchPages)) >= batchSize:
             flushToDisk(cursor, batchPages, batchFTS)
             batchPages.clear()
@@ -69,25 +73,28 @@ def createDatabase(dbname):
     connection.close()
 
 def flushToDisk(cursor, batchPages, batchFTS):
-    cursor.executemany("INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?, ?)", batchPages) # raw string
-    firstRowID = cursor.lastrowid - len(batchPages) + 1 # get the row ids assigned to pages, and match them to FTS entries
-    i = 0
-    ftsRows = []
-    for row in batchFTS:
-        ftsRows.append((firstRowID + i, row))
-        i += 1
-    cursor.executemany("INSERT INTO pages_fts(rowid, tokenizedText) VALUES (?, ?)", ftsRows) # pages_fts is basically an index on pages
+    # cursor.execute("SELECT COALESCE(MAX(rowid), 0) FROM pages")
+    # firstRowID = cursor.fetchone()[0] + 1 # get the row ids assigned to pages, and match them to FTS entries
+    cursor.executemany("INSERT INTO pages(id, filepath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", batchPages)
+    # firstRowID = cursor.lastrowid - len(batchPages) + 1 # executemany does NOT guarantee lastrowid is accurate, only execute does
+    # i = 0
+    # ftsRows = []
+    # for row in batchFTS: # from manual ID insertion, now copied from batchPages earlier during createDatabase
+    #     ftsRows.append((firstRowID + i, row))
+    #     i += 1
+    cursor.executemany("INSERT INTO pages_fts(rowid, tokenizedText) VALUES (?, ?)", batchFTS) # pages_fts is basically an index on pages
 
 
-def directoryParse(dirRootPath, alreadyIndexed):
+def directoryParse(dirRootPath, alreadyIndexed, startingID):
     # TODO: loop through all newspapers, dates, and file pages to generate each full entry
     if (not os.path.isdir(dirRootPath)): 
         print(f"'{dirRootPath}' is not a valid directory.")
         return
     # collectedFiles = []
+    currentID = startingID
     for dirRoot, dirName, files in os.walk(dirRootPath):
         for fileName in files:
-            if (fileName.lower().endswith("xml")):
+            if (fileName.lower().endswith(".xml")): # requires xml filetype, ignoring files with "xml" at end of name
                 filePath = os.path.join(dirRoot, fileName)
                 # checking if the filePath has already been inserted, if so then skip processing
                 if (filePath in alreadyIndexed):
@@ -109,7 +116,8 @@ def directoryParse(dirRootPath, alreadyIndexed):
                     continue
                 # TODO: add validation
 
-                yield (cF.filePath, cF.newspaper, cF.date, cF.pageNumber, cF.pageConfidence, cF.OCRSoftware, cF.text, cF.tokenizedText) # yield generator to insert file by file
+                yield (currentID, cF.filePath, cF.newspaper, cF.date, cF.pageNumber, cF.pageConfidence, cF.OCRSoftware, cF.text, cF.tokenizedText) # yield generator to insert file by file
+                currentID += 1
                 # collectedFiles.append(extractFile(currFile, filePath)) // cannot build a list of 120GB of text and metadata in a normal machine's local memory
     # return collectedFiles
 
@@ -147,8 +155,8 @@ def extractFile(entry, filePath):
     print (text)
     # TODO: Run a tokenizer to speed up keyword searches in queries
         # May want to address OCR corruptions first
-    # Inserts all metadata, raw text (for user readability),
-    # (and nested tokenized words) into collection database 
+    # Sets all metadata, raw text (for user readability),
+    # (and nested tokenized words) to be inserted into collection database 
     entry.date = date
     entry.OCRSoftware = OCRSoftware
     entry.text = text
@@ -162,4 +170,5 @@ def extractFile(entry, filePath):
 # extractFile(file(), "nws_19350805_0002.xml") # check that file's attributes are correctly scanned
 # createDatabase("test_tnw_unicode_version.db") # As I run this, I only have the tnw_ShinSekai_The New World folder inside the relative directory \UCB
 # createDatabase("test_tnw+nws_unicode_version.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
-createDatabase("test_newspaper.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
+# createDatabase("test_newspaper.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
+createDatabase("test_newspaper_withexplicitid.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
