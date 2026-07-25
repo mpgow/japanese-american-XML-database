@@ -8,7 +8,7 @@ tagger = fugashi.Tagger()
 # Defines the relative starting location for directory search to be where the script file is located,
 # so that script should still work regardless of working directory if executing in terminal.
 # Otherwise, running in an IDE should be able to path resolve fine without this.
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class file:
     # TODO: decide what metadata we should collect from the files
@@ -73,15 +73,7 @@ def createDatabase(dbname):
     connection.close()
 
 def flushToDisk(cursor, batchPages, batchFTS):
-    # cursor.execute("SELECT COALESCE(MAX(rowid), 0) FROM pages")
-    # firstRowID = cursor.fetchone()[0] + 1 # get the row ids assigned to pages, and match them to FTS entries
     cursor.executemany("INSERT INTO pages(id, filepath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", batchPages)
-    # firstRowID = cursor.lastrowid - len(batchPages) + 1 # executemany does NOT guarantee lastrowid is accurate, only execute does
-    # i = 0
-    # ftsRows = []
-    # for row in batchFTS: # from manual ID insertion, now copied from batchPages earlier during createDatabase
-    #     ftsRows.append((firstRowID + i, row))
-    #     i += 1
     cursor.executemany("INSERT INTO pages_fts(rowid, tokenizedText) VALUES (?, ?)", batchFTS) # pages_fts is basically an index on pages
 
 
@@ -90,7 +82,6 @@ def directoryParse(dirRootPath, alreadyIndexed, startingID):
     if (not os.path.isdir(dirRootPath)): 
         print(f"'{dirRootPath}' is not a valid directory.")
         return
-    # collectedFiles = []
     currentID = startingID
     for dirRoot, dirName, files in os.walk(dirRootPath):
         for fileName in files:
@@ -100,9 +91,6 @@ def directoryParse(dirRootPath, alreadyIndexed, startingID):
                 if (filePath in alreadyIndexed):
                     print(f"skip {filePath}")
                     continue
-                # parts = dirRoot.split(os.sep) # useful split, selects separation character based on OS
-                # currNewspaper = parts[1] # however, no longer works since I am adding root_location with script's relative location
-                
                 # dirRoot (fuller) includes everything in path except the final filename
                 # dirRootPath (shorter) includes path up to \UCB, since we joined last that in root_location
                 relPath = os.path.relpath(dirRoot, dirRootPath)
@@ -115,12 +103,27 @@ def directoryParse(dirRootPath, alreadyIndexed, startingID):
                     print(f"Failed on {filePath}: {e}")
                     continue
                 # TODO: add validation
-
                 yield (currentID, cF.filePath, cF.newspaper, cF.date, cF.pageNumber, cF.pageConfidence, cF.OCRSoftware, cF.text, cF.tokenizedText) # yield generator to insert file by file
                 currentID += 1
-                # collectedFiles.append(extractFile(currFile, filePath)) // cannot build a list of 120GB of text and metadata in a normal machine's local memory
-    # return collectedFiles
 
+# insted of default adding spaces between every OCR "word," use ascii + alphanumeric check 
+# to ensure we only add spaces between latin-alphabetical words (English) and numbers
+def joinOCRChar(strings):
+    words = []
+    prevChar = ''
+    for s in strings:
+        if (s):
+            currChar = s[0]
+        else:
+            currChar = ''
+        if (words and prevChar.isascii() and prevChar.isalnum() and currChar.isascii() and currChar.isalnum()):
+            words.append(' ')
+        words.append(s)
+        if (s):
+            prevChar = s[-1]
+        else:
+            prevChar = ''
+    return ''.join(words)
 
 # Inserts all the page's text and relevant metadata into the collection database 
 def extractFile(entry, filePath):
@@ -137,24 +140,15 @@ def extractFile(entry, filePath):
     pageNumber = root.find(f"{ns}Layout/{ns}Page").get("PHYSICAL_IMG_NR")
     pageConfidence = root.find(f"{ns}Layout/{ns}Page").get("PC")
     # Find all strings within the page
-        # print(root[2][0][4])
-        # textRoot = root[2][0][4] # works, but much safer to specify via text
     textRoot = root.find(f"{ns}Layout/{ns}Page/{ns}PrintSpace") # steps into <alto>:[2]<Layout>[0]<Page>[4]<PrintSpace>
-        # for textBlock in textRoot.iter(f"{ns}TextBlock"):
-        #     print(textBlock)
-        #     for textLine in textBlock.iter(f"{ns}TextLine"):
-        #         print(textLine)
-        #         for string in textLine.iter(f"{ns}String"):
-        #             print(string)
-        #             OCRitem = string.get("CONTENT") # attribute of each OCR chunk is called CONTENT
-        #             print(OCRitem)
     strings = textRoot.iter(f"{ns}String") # ET iterator of all (nested) strings in textRoot
     # Concatenate strings into a single text
-    text = ' '.join(s.get("CONTENT") for s in strings) # space separate each OCR "word"
+    text = joinOCRChar([s.get("CONTENT") for s in strings]) # space separate each OCR "word"
     tokenizedText = ' '.join([word.surface for word in tagger(text)])
     print (text)
     # TODO: Run a tokenizer to speed up keyword searches in queries
-        # May want to address OCR corruptions first
+        # May want to address OCR corruptions first (e.g. there's no technique that re-merges text that has been
+        # incorrectly split by an OCR error, so a 2 char word split with whitespace is never remerged with any logic)
     # Sets all metadata, raw text (for user readability),
     # (and nested tokenized words) to be inserted into collection database 
     entry.date = date
@@ -163,12 +157,7 @@ def extractFile(entry, filePath):
     entry.tokenizedText = tokenizedText
     entry.pageNumber = pageNumber
     entry.pageConfidence = pageConfidence
-    # return entry # don't need to return because we are modifying entry's values in place
 
 # For testing
 
-# extractFile(file(), "nws_19350805_0002.xml") # check that file's attributes are correctly scanned
-# createDatabase("test_tnw_unicode_version.db") # As I run this, I only have the tnw_ShinSekai_The New World folder inside the relative directory \UCB
-# createDatabase("test_tnw+nws_unicode_version.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
-# createDatabase("test_newspaper.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
-createDatabase("test_newspaper_withexplicitid.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
+createDatabase("test_newspaper_explicitid_whitespacelogic.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB

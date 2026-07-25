@@ -2,7 +2,7 @@ import sqlite3
 import os
 import fugashi
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(SCRIPT_DIR,"test_newspaper_withexplicitid.db")
 
 connection = sqlite3.connect(DB_PATH)
@@ -30,9 +30,9 @@ print(f"Page Confidence = {row[2]}")
 print(f"Text = {row[3][:200]}")
 cursor.execute("SELECT COUNT(*) FROM pages_fts WHERE tokenizedText MATCH ?", [ftsQuery]) # choose phrase here e.g. 二世
 print(f"\nFTS page count search for {phrase}: {cursor.fetchone()[0]} results") # f's implicit rowid matched with p's explicit id
-cursor.execute("""SELECT SUBSTR(date, 1, 4) as year, COUNT(*) 
+cursor.execute("""SELECT SUBSTR(date, 1, 4) as year, COUNT(*)
                FROM pages_fts f JOIN pages p ON f.rowid = p.id
-               WHERE tokenizedText MATCH ? 
+               WHERE tokenizedText MATCH ?
                AND date >= '1800-01-01' AND date <= '2040-12-31'
                GROUP BY year
                ORDER BY year ASC""", [ftsQuery])
