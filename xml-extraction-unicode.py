@@ -108,6 +108,7 @@ def directoryParse(dirRootPath, alreadyIndexed, startingID):
 
 # insted of default adding spaces between every OCR "word," use ascii + alphanumeric check 
 # to ensure we only add spaces between latin-alphabetical words (English) and numbers
+# japanese words remain unspaced within a sentence, as it is naturally written
 def joinOCRChar(strings):
     words = []
     prevChar = ''
