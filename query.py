@@ -57,7 +57,7 @@ trueTotal = 0
 phraseTokens = tokenizedPhrase.split() # search for phrase as list of tokens, regardless of length
 phraseLen = len(phraseTokens)
 for row in cursor.fetchall(): # each "row" is actually a newspaper page that contains the tokenizedText
-    pageTokens = [word.surface for word in tagger(row[0])]
+    pageTokens = [word.surface for word in tagger(row[0])] # row is something like (text,) so we have to index in
     for i in range(len(pageTokens) - phraseLen + 1):
         if pageTokens[i:i + phraseLen] == phraseTokens:
             trueTotal += 1 # can now do true appearance counts regardless of phrase length
@@ -65,14 +65,17 @@ for row in cursor.fetchall(): # each "row" is actually a newspaper page that con
     # trueTotal += row[0].split().count(tokenizedPhrase) #.count(tokenizedPhrase) assumes the search phrase is one token
     # if you want to search for a phrase LONGER than a token, you'll need to sequence match the tokens
     # for the page appearance counts, FTS5 should still work even with sequences of tokens
-print(f"{trueTotal} total appearances")
+print(f"{trueTotal} total appearances - matching case sensitivity")
+
 # TODO: Refine search results
+
 dateRange = input("Type in a date range in the form XXXX-XXXX: ")
 startYear, endYear = dateRange[0:4], dateRange[5:] # TODO: needs more specificity for edge cases later
 while len(dateRange) != 9 or not startYear.isdigit() or not endYear.isdigit():
     print("incorrect date format, try again")
     dateRange = input("Type in a date range in the form XXXX-XXXX: ")
 startYear, endYear = int(dateRange[0:4]), int(dateRange[5:])
+
 sourceRange = input("Select newspapers you'd like to include (WIP, input \"None\") ")
 while sourceRange != "None":
     print("input must be None (WIP)")
@@ -83,6 +86,16 @@ while (not index.isdigit()):
     print("input must be an integer, try again")
     index = input("Type in the numerical index of the sentence you'd like to see the phrase used in: ")
 index = int(index)
+
+sensitive = input("Would you like to match case-sensitively? { Y | N } ")
+while (sensitive != "Y" and sensitive != "N"):
+    print("input must be a single character, try again")
+    input("Would you like to match case-sensitively? { Y | N } ")
+if (sensitive == "Y"):
+    sensitive = True
+else:
+    sensitive = False
+
 # TODO: Output the selected sentence with phrase -> note the index increments with every appearance, so multiple appearances in a page is possible
 cursor.execute("""SELECT p.text, p.date
                   FROM pages p JOIN pages_fts f ON p.id = f.rowid
@@ -92,10 +105,21 @@ selectedTotal = 0
 for SText, SDate in cursor.fetchall():
     # print(SText, SDate)
     print(f">>>{SDate} aka {int(SDate[0:4])} with selectedTotal: {selectedTotal}<<<")
-    if selectedTotal == index:
-        print(SText)
-    pageTokens = [word.surface for word in tagger(row[0])]
+
+    if sensitive:
+        pageTokens = [word.surface for word in tagger(SText)]
+    else:
+        pageTokens = [word.surface.lower() for word in tagger(SText)]
     for i in range(len(pageTokens) - phraseLen + 1):
-        if pageTokens[i:i + phraseLen] == phraseTokens and int(SDate[0:4]) >= startYear and int(SDate[0:4]) <= endYear:
+        matched = False
+        if sensitive:
+            if pageTokens[i:i + phraseLen] == phraseTokens and int(SDate[0:4]) >= startYear and int(SDate[0:4]) <= endYear:
+                matched = True
+        else:
+            if pageTokens[i:i + phraseLen] == [phraseToken.lower() for phraseToken in phraseTokens] and int(SDate[0:4]) >= startYear and int(SDate[0:4]) <= endYear:
+                matched = True
+        if matched:
+            if selectedTotal == index:
+                print(SText[0:100], "...")
             selectedTotal += 1
 connection.close()

@@ -21,6 +21,9 @@ requires: Python >= 3.9 for fugashi
 
 unidic-lite still in use, but full unidic should be used for "production" ready release
 
+FTS queries are case-insensitive and are currently page counted
+user-prompt queries are case-sensitivity optional and are true occurrence counted
+
 XML files are organized by the ALTO-XML schema:
 https://en.wikipedia.org/wiki/Analyzed_Layout_and_Text_Object
 
