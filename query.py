@@ -1,9 +1,10 @@
 import sqlite3
 import os
 import fugashi
+from xml_extraction_unicode import joinOCRChar
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(SCRIPT_DIR,"test_newspaper_withexplicitid.db")
+DB_PATH = os.path.join(SCRIPT_DIR,"test_newspaper_explicitid_whitespacelogicwithpunctuation.db")
 
 connection = sqlite3.connect(DB_PATH)
 cursor = connection.cursor()
@@ -48,6 +49,9 @@ if results:
         print(f"Year {year}: {count} page appearances")
 else:
     print("No results found")
+    connection.close()
+    exit() # TODO: Make phrase inputs part of a function to loop
+
 print(f"\nFTS frequency search for \"{phrase}\" results")
 cursor.execute("""SELECT p.text
                FROM pages p JOIN pages_fts f ON p.id = f.rowid
@@ -120,6 +124,20 @@ for SText, SDate in cursor.fetchall():
                 matched = True
         if matched:
             if selectedTotal == index:
-                print(SText[0:100], "...")
+                sentence = []
+                lI, rI = i - 1, i + 1
+                while lI >= 0 and pageTokens[lI] not in ".。?!":
+                    sentence.append(pageTokens[lI])
+                    lI -= 1
+                sentence = sentence[::-1]
+                sentence.append(pageTokens[i])
+                while rI < len(pageTokens):
+                    sentence.append(pageTokens[rI])
+                    if pageTokens[rI] in ".。?!": # Need to specify more punctuation
+                        if rI + 1 >= len(pageTokens) or pageTokens[rI + 1] not in ".。?!": # get all ending punctuation before breaking
+                            break
+                    rI += 1
+                sentence = joinOCRChar(sentence)
+                print(sentence)
             selectedTotal += 1
 connection.close()

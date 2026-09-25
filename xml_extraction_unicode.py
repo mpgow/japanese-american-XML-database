@@ -117,8 +117,11 @@ def joinOCRChar(strings):
             currChar = s[0]
         else:
             currChar = ''
-        if (words and prevChar.isascii() and prevChar.isalnum() and currChar.isascii() and currChar.isalnum()):
-            words.append(' ')
+        prevEnglish = prevChar.isascii() or prevChar in "“”‘’" # directional quotes from auto formatting
+        currEnglish = currChar.isascii() or currChar in "“”‘’"
+        if (words and prevEnglish and currEnglish):
+            if not ((currChar in ",.?!;:)}]”’") or (prevChar in "({[“‘")): # skip closing punctuation or after specific opening punctuation
+                words.append(' ')
         words.append(s)
         if (s):
             prevChar = s[-1]
@@ -160,5 +163,5 @@ def extractFile(entry, filePath):
     entry.pageConfidence = pageConfidence
 
 # For testing
-
-createDatabase("test_newspaper_explicitid_whitespacelogic.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
+if __name__ == "__main__":
+    createDatabase("test_newspaper_explicitid_whitespacelogicwithpunctuation.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
