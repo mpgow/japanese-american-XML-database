@@ -108,8 +108,6 @@ cursor.execute("""SELECT p.text, p.date
 selectedTotal = 0
 for SText, SDate in cursor.fetchall():
     # print(SText, SDate)
-    print(f">>>{SDate} aka {int(SDate[0:4])} with selectedTotal: {selectedTotal}<<<")
-
     if sensitive:
         pageTokens = [word.surface for word in tagger(SText)]
     else:
@@ -126,18 +124,21 @@ for SText, SDate in cursor.fetchall():
             if selectedTotal == index:
                 sentence = []
                 lI, rI = i - 1, i + 1
-                while lI >= 0 and pageTokens[lI] not in ".。?!":
+                while lI >= 0 and pageTokens[lI] not in ".。?!！":
                     sentence.append(pageTokens[lI])
                     lI -= 1
                 sentence = sentence[::-1]
                 sentence.append(pageTokens[i])
                 while rI < len(pageTokens):
                     sentence.append(pageTokens[rI])
-                    if pageTokens[rI] in ".。?!": # Need to specify more punctuation
-                        if rI + 1 >= len(pageTokens) or pageTokens[rI + 1] not in ".。?!": # get all ending punctuation before breaking
+                    if pageTokens[rI] in ".。?!！": # Need to specify more punctuation
+                        if rI + 1 >= len(pageTokens) or pageTokens[rI + 1] not in ".。?!！": # get all ending punctuation before breaking
                             break
                     rI += 1
                 sentence = joinOCRChar(sentence)
                 print(sentence)
             selectedTotal += 1
+            print(f">>>{SDate} aka {int(SDate[0:4])} with selectedTotal: {selectedTotal}<<<")
+            # Might want to print confidence of that specific page as a sanity point
+            # Also, Want to reduce counting in terminal prints due to line scroll limits
 connection.close()
