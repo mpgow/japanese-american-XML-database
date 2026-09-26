@@ -61,6 +61,7 @@ trueTotal = 0
 phraseTokens = tokenizedPhrase.split() # search for phrase as list of tokens, regardless of length
 phraseLen = len(phraseTokens)
 for row in cursor.fetchall(): # each "row" is actually a newspaper page that contains the tokenizedText
+    # TODO: can optimize runtime by storing tokenized text alongside raw text, and splitting using python split() instead of fugashi
     pageTokens = [word.surface for word in tagger(row[0])] # row is something like (text,) so we have to index in
     for i in range(len(pageTokens) - phraseLen + 1):
         if pageTokens[i:i + phraseLen] == phraseTokens:
@@ -106,11 +107,16 @@ cursor.execute("""SELECT p.text, p.date
                   WHERE f.tokenizedText MATCH ?
                   """, [ftsQuery])
 selectedTotal = 0
+found = False
 for SText, SDate in cursor.fetchall():
     # print(SText, SDate)
+    if found:
+        break
     if sensitive:
+        # TODO: can optimize runtime by storing tokenized text alongside raw text, and splitting using python split() instead of fugashi
         pageTokens = [word.surface for word in tagger(SText)]
     else:
+        # TODO: can optimize runtime by storing tokenized text alongside raw text, and splitting using python split() instead of fugashi
         pageTokens = [word.surface.lower() for word in tagger(SText)]
     for i in range(len(pageTokens) - phraseLen + 1):
         matched = False
@@ -124,11 +130,12 @@ for SText, SDate in cursor.fetchall():
             if selectedTotal == index:
                 sentence = []
                 lI, rI = i - 1, i + 1
-                while lI >= 0 and pageTokens[lI] not in ".。?!！":
+                while lI >= 0 and pageTokens[lI] not in ".。?!！": # fugashi tokenizes punctuation by itself
+                    # TODO: check if any character in the token is an ending punctuation
                     sentence.append(pageTokens[lI])
                     lI -= 1
                 sentence = sentence[::-1]
-                sentence.append(pageTokens[i])
+                sentence.append(pageTokens[i]) # TODO: if multiple tokens, then need to add all of them to rI's index and here
                 while rI < len(pageTokens):
                     sentence.append(pageTokens[rI])
                     if pageTokens[rI] in ".。?!！": # Need to specify more punctuation
@@ -137,6 +144,8 @@ for SText, SDate in cursor.fetchall():
                     rI += 1
                 sentence = joinOCRChar(sentence)
                 print(sentence)
+                found = True
+                break
             selectedTotal += 1
             print(f">>>{SDate} aka {int(SDate[0:4])} with selectedTotal: {selectedTotal}<<<")
             # Might want to print confidence of that specific page as a sanity point

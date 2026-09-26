@@ -132,12 +132,14 @@ def joinOCRChar(strings):
 # Inserts all the page's text and relevant metadata into the collection database 
 def extractFile(entry, filePath):
     print(f"starting extraction of {filePath}")
+    # TODO: if namespace version changes, scan fails; update to extract the ns using the root
     ns = "{http://www.loc.gov/standards/alto/ns-v3#}" # implicit namespace before all tags
     # Take in a filepath and reads in XML data
     tree = ET.parse(filePath) # can be adjacent filename or specific filepath
     root = tree.getroot() # <alto>
     # Gather embedded metadata
     fnText = root.find(f"{ns}Description/{ns}sourceImageInformation/{ns}fileName").text # redundancy
+    # TODO: May be prone to files outside of this format, double check! Update using regex
     date = fnText[6:10]+'-'+fnText[10:12]+'-'+fnText[12:14] # example: ./nws_19350805_0002.xml -> 1935-08-05
     OCRSoftwareRoot = root.find(f"{ns}Description/{ns}OCRProcessing/{ns}ocrProcessingStep/{ns}processingSoftware")
     OCRSoftware = ' '.join([OCRSoftwareRoot.find(f"{ns}softwareName").text, OCRSoftwareRoot.find(f"{ns}softwareVersion").text])
