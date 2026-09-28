@@ -1,23 +1,59 @@
 import sqlite3
 import os
-import fugashi
-from xml_extraction_unicode import joinOCRChar
+# import fugashi # moved to db creation
+# import pykakasi # moved to db creation
+# import re # for regex (not used yet)
+from xml_extraction_unicode import joinOCRChar, tokenizeTriplet
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(SCRIPT_DIR,"test_newspaper_explicitid_whitespacelogicwithpunctuation.db")
+DB_PATH = os.path.join(SCRIPT_DIR,"test_newspaper_vers0.db")
 
 connection = sqlite3.connect(DB_PATH)
 cursor = connection.cursor()
-tagger = fugashi.Tagger()
-# phrase = "明治"
+# tagger = fugashi.Tagger()
+# kks = pykakasi.kakasi()
+
+# if tokens contain quotation marks, double it to make it SQL safe for querying
+def ftsPhrase(tokens):
+    return '"' + ' '.join(token.replace('"', '""') for token in tokens) + '"'
+
+# returns the start indices where phrase is found in tokens
+# only checks for entire phrase once first token of phrase matches current checked index
+def phraseScanner(tokens, phrase):
+    start = phrase[0] # first phrase token, use to qualify when to actually create a scanning slice
+    found = [] # all indices that are the start of a fully matching phrase found in tokens
+    for i in range(len(tokens)):
+        if tokens[i] == start and tokens[i:i + len(phrase)] == phrase:
+            found.append(i)
+    return found
+
+def lowercaseEach(tokens):
+    return [token.lower() for token in tokens]
+
+# phrase = "明治" # example single token kanji phrase
 phrase = input("what phrase or term are you searching for? ")
 # TODO: Do bilingual phrase search, so inputs can be in romaji or kanji, with case-sensitivity choice
-print(f"phrase received: {phrase}")
-tokenizedPhrase = ' '.join(word.surface for word in tagger(phrase)) # ensure uses same format as when stored by tagger
-ftsQuery = f'"{tokenizedPhrase}"' # double quotes to ensure strict matching
-# pages row = (0:id, 1:filePath, 2:newspaper, 3:date, 4:pageNumber, 5:pageConfidence, 6:OCRSoftware, 7:text)
-# fts row = (0:id, 1:tokenizedText)
+# inputs can be kanji, kana, romaji, or English
+# searching romaji or English just searches the input as typed without conversions
+surfacePhrase, kanaPhrase, romaPhrase = tokenizeTriplet(phrase)
+if not surfacePhrase:
+    print(f"{phrase} has no searchable tokens")
+    connection.close()
+    exit()
+phraseLen = len(surfacePhrase)
+surfaceQuery = ftsPhrase(surfacePhrase)
+romaQuery = ftsPhrase(romaPhrase)
 
+# Need to take phrase, run it through tokenized Roma first to get superset's indices
+# tokenized Roma -> total hits from superset of romanized text
+# tokenizedText at the SAME index -> map of original text char : hit count
+# tokenizedText is also used to still do total occurrence count of EXACT phrase if desired
+print(f"phrase received: {phrase}")
+print(f"phrase tokens = {surfacePhrase} : romanized reading = {romaPhrase}")
+# pages row = (0:id, 1:filePath, 2:newspaper, 3:date, 4:pageNumber, 5:pageConfidence, 6:OCRSoftware, 7:text, 8:tokenizedText, 9:tokenizedKana, 10:tokenizedRoma)
+# fts row = (0:id, 1:tokenizedText, 2:tokenizedRoma)
+
+# General database overview for sense of scale
 cursor.execute("SELECT COUNT(*) FROM pages")
 print(f"Total pages = {cursor.fetchone()[0]}")
 cursor.execute("SELECT DISTINCT newspaper FROM pages")
@@ -25,22 +61,17 @@ print(f"Newspapers = {[row[0] for row in cursor.fetchall()]}")
 cursor.execute("SELECT MIN(date), MAX(date) FROM pages")
 row = cursor.fetchone()
 print(f"Date range = {row[0]} to {row[1]}")
-cursor.execute("SELECT filepath, date, pageConfidence, text FROM pages LIMIT 1")
-# row = cursor.fetchone()
-# print(f"\nSample Row:")
-# print(f"FilePath = {row[0]}")
-# print(f"Date = {row[1]}")
-# print(f"Page Confidence = {row[2]}")
-# print(f"Text = {row[3][:200]}")
-cursor.execute("SELECT COUNT(*) FROM pages_fts WHERE tokenizedText MATCH ?", [ftsQuery]) # choose phrase here e.g. 二世
-print(f"\nFTS page count search for {phrase}: {cursor.fetchone()[0]} results") # f's implicit rowid matched with p's explicit id
+
+# search romanized text for pages that contain the phrase, and then parse qualified pages to find exact indices and their writing to print out
+cursor.execute("SELECT COUNT(*) FROM pages_fts WHERE tokenizedRoma MATCH ?", [romaQuery]) # choose phrase here e.g. 二世 : nisei
+print(f"\nFTS page count search for romanized text \"{' '.join(romaPhrase)}\": {cursor.fetchone()[0]} results") # f's implicit rowid matched with p's explicit id
 cursor.execute("""SELECT SUBSTR(date, 1, 4) as year, COUNT(*)
                FROM pages_fts f JOIN pages p ON f.rowid = p.id
-               WHERE tokenizedText MATCH ?
+               WHERE f.tokenizedRoma MATCH ?
                AND date >= '1800-01-01' AND date <= '2040-12-31'
                GROUP BY year
-               ORDER BY year ASC""", [ftsQuery])
-print(f"\nFTS page frequency search for \"{phrase}\" results")
+               ORDER BY year ASC""", [romaQuery])
+print(f"\nFTS page frequency search for \"{phrase}\" results:")
 results = cursor.fetchall()
 if results:
     for row in results:
@@ -52,39 +83,48 @@ else:
     connection.close()
     exit() # TODO: Make phrase inputs part of a function to loop
 
+# Go through the FTS qualified pages to count true occurrences
+# match indices using the romanized tokens, and then read paired surface tokens at those indices
+# this allows for broadband search and specific written form counts, without fugashi or pykakasi runs
+
 print(f"\nFTS frequency search for \"{phrase}\" results")
-cursor.execute("""SELECT p.text
+cursor.execute("""SELECT p.tokenizedText, p.tokenizedRoma
                FROM pages p JOIN pages_fts f ON p.id = f.rowid
-               WHERE f.tokenizedText MATCH ? 
-               """, [ftsQuery]) # need custom logic for searching true appearances
-trueTotal = 0
-phraseTokens = tokenizedPhrase.split() # search for phrase as list of tokens, regardless of length
-phraseLen = len(phraseTokens)
-for row in cursor.fetchall(): # each "row" is actually a newspaper page that contains the tokenizedText
-    # TODO: can optimize runtime by storing tokenized text alongside raw text, and splitting using python split() instead of fugashi
-    pageTokens = [word.surface for word in tagger(row[0])] # row is something like (text,) so we have to index in
-    for i in range(len(pageTokens) - phraseLen + 1):
-        if pageTokens[i:i + phraseLen] == phraseTokens:
-            trueTotal += 1 # can now do true appearance counts regardless of phrase length
-            # Search via fugashi's phrase format rather than p's OCR delimited words
-    # trueTotal += row[0].split().count(tokenizedPhrase) #.count(tokenizedPhrase) assumes the search phrase is one token
-    # if you want to search for a phrase LONGER than a token, you'll need to sequence match the tokens
-    # for the page appearance counts, FTS5 should still work even with sequences of tokens
-print(f"{trueTotal} total appearances - matching case sensitivity")
+               WHERE f.tokenizedRoma MATCH ? 
+               """, [romaQuery]) # need custom logic for searching true appearances
+counts = {}
+scanPhrase = lowercaseEach(romaPhrase)
+for surfaceText, romaText in cursor: # load rows of pages one at a time
+    surfaceTokens = surfaceText.split()
+    romaTokens = romaText.split()
+    scanTokens = lowercaseEach(romaTokens)
+    for i in phraseScanner(scanTokens, scanPhrase):
+        counts[' '.join(surfaceTokens[i:i + phraseLen])] = counts.get(' '.join(surfaceTokens[i:i + phraseLen]), 0) + 1
+print(f"{sum(counts.values())} total appearances of shared case insensitive romanized text")
+for pKey, pValue in counts.items():
+    print(f"{pKey}: {pValue}")
+print(f"{counts[' '.join(surfacePhrase)]} total appearances matched your exact input (case and transliteration sensitive)")
 
 # TODO: Refine search results
 
-dateRange = input("Type in a date range in the form XXXX-XXXX: ")
-startYear, endYear = dateRange[0:4], dateRange[5:] # TODO: needs more specificity for edge cases later
-while len(dateRange) != 9 or not startYear.isdigit() or not endYear.isdigit():
-    print("incorrect date format, try again")
+while True:
     dateRange = input("Type in a date range in the form XXXX-XXXX: ")
+    startYear, endYear = dateRange[0:4], dateRange[5:] # TODO: needs more specificity for edge cases later
+    if len(dateRange) == 9 and startYear.isdigit() and endYear.isdigit():
+        break
+    print("incorrect date format, try again")
 startYear, endYear = int(dateRange[0:4]), int(dateRange[5:])
 
 sourceRange = input("Select newspapers you'd like to include (WIP, input \"None\") ")
 while sourceRange != "None":
     print("input must be None (WIP)")
     sourceRange = input("Select newspapers you'd like to include (WIP, input \"None\") ")
+
+exact = input("Transliteration Modes: { B = broad, any written form | E = exact, match spelling exactly} ")
+while exact not in ("B", "E"):
+    print("input must be B or E, try again")
+    exact = input("Transliteration Modes: { B = broad, any written form | E = exact, match spelling exactly} ")
+exact = (exact == "E")
 
 index = input("Type in the numerical index of the sentence you'd like to see the phrase used in: ")
 while (not index.isdigit()):
@@ -95,59 +135,62 @@ index = int(index)
 sensitive = input("Would you like to match case-sensitively? { Y | N } ")
 while (sensitive != "Y" and sensitive != "N"):
     print("input must be a single character, try again")
-    input("Would you like to match case-sensitively? { Y | N } ")
-if (sensitive == "Y"):
-    sensitive = True
-else:
-    sensitive = False
+    sensitive = input("Would you like to match case-sensitively? { Y | N } ")
+sensitive = (sensitive == "Y")
 
-# TODO: Output the selected sentence with phrase -> note the index increments with every appearance, so multiple appearances in a page is possible
-cursor.execute("""SELECT p.text, p.date
-                  FROM pages p JOIN pages_fts f ON p.id = f.rowid
-                  WHERE f.tokenizedText MATCH ?
-                  """, [ftsQuery])
+# TODO: Deprecate the original search method in favor of dual search version
+
+# Find the exact sentence at the selected index
+# Broad "B" mode searches roma column (the superset); exact "E" mode searches the surface column (matching raw)
+
+matchColumn = "tokenizedText" if exact else "tokenizedRoma"
+matchQuery = surfaceQuery if exact else romaQuery
+matchPhrase = surfacePhrase if exact else romaPhrase
+if not sensitive:
+    matchPhrase = lowercaseEach(matchPhrase)
+
+# Ensure index ordering with ORDER BY clause, and narrow search with year filter
+cursor.execute(f"""SELECT p.tokenizedText, p.tokenizedRoma, p.date
+                   FROM pages p JOIN pages_fts f ON p.id = f.rowid
+                   WHERE f.{matchColumn} MATCH ?
+                   AND CAST(SUBSTR(p.date, 1, 4) AS INTEGER) BETWEEN ? AND ?
+                   ORDER BY p.date, p.id""", [matchQuery, startYear, endYear])
 selectedTotal = 0
 found = False
-for SText, SDate in cursor.fetchall():
-    # print(SText, SDate)
+for surfaceText, romaText, SDate in cursor:
+    surfaceTokens = surfaceText.split() # the original text that will be displayed
+    matchTokens = surfaceTokens if exact else romaText.split() # the tokens our phrase will match check with
+    if not sensitive:
+        matchTokens = lowercaseEach(matchTokens) # only English changes, doesn't affect Japanese characters
+    for i in phraseScanner(matchTokens, matchPhrase):
+        if selectedTotal == index:
+            sentence = []
+            # lI scans left until reaches beginning of page or the end of the last sentence
+            # rI scans right from the end of the found phrase until reaches the end of  page or the start of the next sentence 
+            lI, rI = i - 1, i + phraseLen 
+            while lI >= 0 and surfaceTokens[lI] not in ".。?!！": # fugashi tokenizes punctuation by itself
+                # TODO: check if any character in the token is an ending punctuation
+                sentence.append(surfaceTokens[lI])
+                lI -= 1
+            sentence = sentence[::-1] # reverse sentence because we scanned from right to left
+            sentence.extend(surfaceTokens[i:i + phraseLen]) # add each token of the query phrase
+            while rI < len(surfaceTokens):
+                sentence.append(surfaceTokens[rI])
+                if surfaceTokens[rI] in ".。?!！": # Need to specify more punctuation
+                     # get all consecutive ending punctuation before breaking out of the sentence
+                    if rI + 1 >= len(surfaceTokens) or surfaceTokens[rI + 1] not in ".。?!！":
+                        break
+                rI += 1
+            print(f"[matched as: {' '.join(surfaceTokens[i:i + phraseLen])}] {SDate}")
+            print(joinOCRChar(sentence))
+            found = True
+            break
+        selectedTotal += 1
+        print(f">>>{SDate} aka {int(SDate[0:4])} with selected total: {selectedTotal}<<<")
+        # Might want to print confidence of that specific page as a sanity point
+        # Also, want to reduce counting in terminal prints due to line scroll limits
     if found:
         break
-    if sensitive:
-        # TODO: can optimize runtime by storing tokenized text alongside raw text, and splitting using python split() instead of fugashi
-        pageTokens = [word.surface for word in tagger(SText)]
-    else:
-        # TODO: can optimize runtime by storing tokenized text alongside raw text, and splitting using python split() instead of fugashi
-        pageTokens = [word.surface.lower() for word in tagger(SText)]
-    for i in range(len(pageTokens) - phraseLen + 1):
-        matched = False
-        if sensitive:
-            if pageTokens[i:i + phraseLen] == phraseTokens and int(SDate[0:4]) >= startYear and int(SDate[0:4]) <= endYear:
-                matched = True
-        else:
-            if pageTokens[i:i + phraseLen] == [phraseToken.lower() for phraseToken in phraseTokens] and int(SDate[0:4]) >= startYear and int(SDate[0:4]) <= endYear:
-                matched = True
-        if matched:
-            if selectedTotal == index:
-                sentence = []
-                lI, rI = i - 1, i + 1
-                while lI >= 0 and pageTokens[lI] not in ".。?!！": # fugashi tokenizes punctuation by itself
-                    # TODO: check if any character in the token is an ending punctuation
-                    sentence.append(pageTokens[lI])
-                    lI -= 1
-                sentence = sentence[::-1]
-                sentence.append(pageTokens[i]) # TODO: if multiple tokens, then need to add all of them to rI's index and here
-                while rI < len(pageTokens):
-                    sentence.append(pageTokens[rI])
-                    if pageTokens[rI] in ".。?!！": # Need to specify more punctuation
-                        if rI + 1 >= len(pageTokens) or pageTokens[rI + 1] not in ".。?!！": # get all ending punctuation before breaking
-                            break
-                    rI += 1
-                sentence = joinOCRChar(sentence)
-                print(sentence)
-                found = True
-                break
-            selectedTotal += 1
-            print(f">>>{SDate} aka {int(SDate[0:4])} with selectedTotal: {selectedTotal}<<<")
-            # Might want to print confidence of that specific page as a sanity point
-            # Also, Want to reduce counting in terminal prints due to line scroll limits
+if not found:
+    print(f"only {selectedTotal} matches in that range, so index {index} is out of range")
 connection.close()

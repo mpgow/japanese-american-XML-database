@@ -2,18 +2,46 @@ import sqlite3 # SQL database
 import xml.etree.ElementTree as ET # python API for parsing XML trees
 import os # used for walking through directory to parse files
 import fugashi
+import pykakasi # for transliteration
+from functools import lru_cache # cache kana : romaji conversions (minimizing kks usage)
 
+# Allow tagger and kks objects to live globally since used across entire extraction & query process
+# TODO: May need to create new objects again if extraction code not available
 tagger = fugashi.Tagger()
+kks = pykakasi.kakasi() # to convert Japanese during transliteration in extractFile
 
 # Defines the relative starting location for directory search to be where the script file is located,
 # so that script should still work regardless of working directory if executing in terminal.
 # Otherwise, running in an IDE should be able to path resolve fine without this.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Memoize cache with mapping of kana : romaji so transliterations share a single cache entry based on reading
+# Default maxsize of 128 too small for extensive text based purposes, but risks of memory leak since it's unbounded
+@lru_cache(maxsize=None)
+def kanaToRoma(kana):
+    return ''.join(item['hepburn'] for item in kks.convert(kana)) #defensive join since fugashi's kana should be 1 segment anyway
+
+# In one tagger run, handles creation of all three token transliterations, while maintaining position alignment
+# Each position sharing the same token (just in different written forms where applicable)
+def tokenizeTriplet(text):
+    surfaceWords = []
+    kanaWords = []
+    romaWords = [] # superset of all token kana types
+    for word in tagger(text): # single pass of slowish fugashi tagger
+        surfaceWords.append(word.surface) # tokenize the raw text
+        if word.feature.kana in (None, "*", ""): # UniDic has no kana reading, e.g. an English word
+            kanaWords.append(word.surface)
+            # TODO: Could try letting kakasi convert roma even if UniDic can't
+            romaWords.append(word.surface) # right now, just append the raw word
+        else:
+            kanaWords.append(word.feature.kana)
+            romaWords.append(kanaToRoma(word.feature.kana)) # kana : romaji conversions are cached
+    return surfaceWords, kanaWords, romaWords
+
 class file:
     # TODO: decide what metadata we should collect from the files
     # Technically will likely never initialize an entry with these values, except manually
-    def __init__(self, id=None, filePath=None, newspaper=None, date=None, pageNumber=None, pageConfidence=None, OCRSoftware=None, text=None, tokenizedText=None):
+    def __init__(self, id=None, filePath=None, newspaper=None, date=None, pageNumber=None, pageConfidence=None, OCRSoftware=None, text=None, tokenizedText=None, tokenizedKana=None, tokenizedRoma=None):
         self.id = id                         # from flushToDisk
         self.filePath = filePath             # from loop parse
         self.newspaper = newspaper           # from loop parse
@@ -22,13 +50,18 @@ class file:
         self.pageConfidence = pageConfidence # from extractFile
         self.OCRSoftware = OCRSoftware       # from extractFile
         self.text = text                     # from extractFile
-        self.tokenizedText = tokenizedText   # from extractFile, no redundant copy in pages
+        self.tokenizedText = tokenizedText   # from extractFile, stored in pages, indexed in pages_fts
+        self.tokenizedKana = tokenizedKana   # from extractFile, stored in pages
+        self.tokenizedRoma = tokenizedRoma   # from extractFile, stored in pages, indexed in pages_fts
 
 def createDatabase(dbname):
     # TODO: create database and call parsing function to create table
     connection = sqlite3.connect(f"{dbname}")
     cursor = connection.cursor()
     # filepath example: ...\UCB\nws_ShinSekai Asahi_The New World Sun\1940\05\05_01
+    # TODO: crash redundancy not working because IF NOT EXISTS prevents same named databases from being created
+    # tokenized texts are all stored as space separated strings with tokens position aligned
+    # increases database creation time and size, but means query time no longer needs to run fugashi or pykakasi
     cursor.execute("""CREATE TABLE IF NOT EXISTS pages (
                    id INTEGER PRIMARY KEY,
                    filepath TEXT NOT NULL,
@@ -37,7 +70,10 @@ def createDatabase(dbname):
                    pageNumber INTEGER,
                    pageConfidence REAL,
                    OCRSoftware TEXT,
-                   text TEXT
+                   text TEXT,
+                   tokenizedText TEXT,
+                   tokenizedKana TEXT,
+                   tokenizedRoma TEXT
                    )""")
     # choose text column for indexing since that's likely what we'll do our phrase searches on
     # specify content location to avoid duplicating all of the database text locally
@@ -47,8 +83,14 @@ def createDatabase(dbname):
     # join FTS5 table with original to link tokenizedText and other metadata
     # contentless table means tokenizedText thrown away after reverse-index generated
     # but can't use snippet() or highlight(), bc only position not text stored, join to recreate snippet
+    
+    # pages_fts reverse indexes either the exact text phrase, or the encompassing romanized phrase, without scanning within pages' rows
+    # tokenizedText (carries exact written form), tokenizedRoma (carries romanized reading form); kana unused in search right now
+    # content="" means contentless tables doesn't store the strings themselves after reverse index is built
+    # will find the pages containing the phrases with pages_fts table then retrieve the text stored in the actual pages table
+    # fugashi/pykakasi already put whitespace between tokens
     cursor.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts
-                   USING fts5(tokenizedText, content="", content_rowid="rowid", tokenize="unicode61")""")
+                   USING fts5(tokenizedText, tokenizedRoma, content="", content_rowid="rowid", tokenize="unicode61")""")
     # EDIT r"UCB" VALUE TO CONFORM TO YOUR RELATIVE FOLDER LOCATION (note example above)
     rootLocation = os.path.join(SCRIPT_DIR, r"UCB") # smartly handles OS-dependent path creation
     cursor.execute("SELECT filepath FROM pages")
@@ -59,9 +101,9 @@ def createDatabase(dbname):
     batchPages = []
     batchFTS = []
     for row in directoryParse(rootLocation, alreadyIndexed, nextID):
-        # row = (filePath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text, tokenizedText)
-        batchPages.append(row[:8]) #exclude tokenizedText
-        batchFTS.append((row[0], row[8])) # just id and tokenizedText
+        # row = (filePath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text, tokenizedText, tokenizedRoma)
+        batchPages.append(row) # pages now includes all relevant tags
+        batchFTS.append((row[0], row[8], row[10])) # pages_fts only receives id, tokenizedText, tokenizedRoma
         if (len(batchPages)) >= batchSize:
             flushToDisk(cursor, batchPages, batchFTS)
             batchPages.clear()
@@ -71,10 +113,12 @@ def createDatabase(dbname):
         flushToDisk(cursor, batchPages, batchFTS)
         connection.commit()
     connection.close()
+    print(f"kana : romaji cache performance: {kanaToRoma.cache_info()}")
+    # On db version 0: kana : romaji cache performance: CacheInfo(hits=58505328, misses=73092, maxsize=None, currsize=73092)
 
 def flushToDisk(cursor, batchPages, batchFTS):
-    cursor.executemany("INSERT INTO pages(id, filepath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", batchPages)
-    cursor.executemany("INSERT INTO pages_fts(rowid, tokenizedText) VALUES (?, ?)", batchFTS) # pages_fts is basically an index on pages
+    cursor.executemany("INSERT INTO pages(id, filepath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text, tokenizedText, tokenizedKana, tokenizedRoma) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", batchPages)
+    cursor.executemany("INSERT INTO pages_fts(rowid, tokenizedText, tokenizedRoma) VALUES (?, ?, ?)", batchFTS) # pages_fts is basically an index on pages
 
 
 def directoryParse(dirRootPath, alreadyIndexed, startingID):
@@ -103,7 +147,8 @@ def directoryParse(dirRootPath, alreadyIndexed, startingID):
                     print(f"Failed on {filePath}: {e}")
                     continue
                 # TODO: add validation
-                yield (currentID, cF.filePath, cF.newspaper, cF.date, cF.pageNumber, cF.pageConfidence, cF.OCRSoftware, cF.text, cF.tokenizedText) # yield generator to insert file by file
+                # insert file by file
+                yield (currentID, cF.filePath, cF.newspaper, cF.date, cF.pageNumber, cF.pageConfidence, cF.OCRSoftware, cF.text, cF.tokenizedText, cF.tokenizedKana, cF.tokenizedRoma) # yield generator to insert file by file
                 currentID += 1
 
 # insted of default adding spaces between every OCR "word," use ascii + alphanumeric check 
@@ -150,8 +195,7 @@ def extractFile(entry, filePath):
     strings = textRoot.iter(f"{ns}String") # ET iterator of all (nested) strings in textRoot
     # Concatenate strings into a single text
     text = joinOCRChar([s.get("CONTENT") for s in strings]) # space separate each OCR "word"
-    tokenizedText = ' '.join([word.surface for word in tagger(text)])
-    print (text)
+    surfaceWords, kanaWords, romaWords = tokenizeTriplet(text) # run tagger and create all three token lists
     # TODO: Run a tokenizer to speed up keyword searches in queries
         # May want to address OCR corruptions first (e.g. there's no technique that re-merges text that has been
         # incorrectly split by an OCR error, so a 2 char word split with whitespace is never remerged with any logic)
@@ -160,10 +204,14 @@ def extractFile(entry, filePath):
     entry.date = date
     entry.OCRSoftware = OCRSoftware
     entry.text = text
-    entry.tokenizedText = tokenizedText
+    entry.tokenizedText = ' '.join(surfaceWords)
+    entry.tokenizedKana = ' '.join(kanaWords)
+    entry.tokenizedRoma = ' '.join(romaWords)
     entry.pageNumber = pageNumber
     entry.pageConfidence = pageConfidence
 
 # For testing
 if __name__ == "__main__":
-    createDatabase("test_newspaper_explicitid_whitespacelogicwithpunctuation.db") # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
+    createDatabase("test_newspaper_vers0.db")
+    # db version 0: explicitid, whitespace logic with extra punctuation, and transliteration for multisearch
+    # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB

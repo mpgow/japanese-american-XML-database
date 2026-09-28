@@ -10,14 +10,24 @@ pip show fugashi
 pip uninstall fugashi unidic-lite
 ```
 
+install pykakasi for hiragana, katakana, kanji, and rōmaji (Hepburn) auto-transliteration:
+
+```bash
+pip install pykakasi
+```
+
 run xml-extraction-unicode.py in order to first generate a reusable indexed database file.
 
 if database creation fails or crashes at any point, feel free to re-run the extraction python file. It will continue where it left off.
 
 if any files are to be added, deleted, or updated, it's advisable to create a new database file from scratch via the extractor.
 
+You likely will need to edit the database extraction file to define your rootLocation variable, which should contain the ALTO-XML newspaper archives to be processed
+
 ## Notes:
-requires: Python >= 3.9 for fugashi
+requires:
+* Python >= 3.9 for [fugashi](https://pypi.org/project/fugashi/)
+* Python >= 3.8 for [pykakasi](https://pypi.org/project/pykakasi/)
 
 unidic-lite still in use, but full unidic should be used for "production" ready release
 
