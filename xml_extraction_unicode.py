@@ -230,6 +230,7 @@ def extractFile(entry, filePath):
 
 # For testing
 if __name__ == "__main__":
-    createDatabase("test_newspaper_vers0.db")
+    createDatabase("test_newspaper_vers1.db")
     # db version 0: explicitid, whitespace logic with extra punctuation, and transliteration for multisearch
+    # db version 1: FULL ARCHIVES + portability, sorted id distribution, and uniqueness
     # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB

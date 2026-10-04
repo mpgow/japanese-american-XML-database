@@ -6,7 +6,7 @@ import os
 from xml_extraction_unicode import joinOCRChar, tokenizeTriplet
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(SCRIPT_DIR,"test_newspaper_vers0.db")
+DB_PATH = os.path.join(SCRIPT_DIR,"test_newspaper_vers1.db")
 
 connection = sqlite3.connect(DB_PATH)
 cursor = connection.cursor()

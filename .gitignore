@@ -2,3 +2,5 @@ UCB/
 *.xml
 *.db
 test.py
+__pycache__/
+*.pyc
