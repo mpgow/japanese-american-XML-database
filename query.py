@@ -103,7 +103,7 @@ for surfaceText, romaText in cursor: # load rows of pages one at a time
 print(f"{sum(counts.values())} total appearances of shared case insensitive romanized text")
 for pKey, pValue in counts.items():
     print(f"{pKey}: {pValue}")
-print(f"{counts[' '.join(surfacePhrase)]} total appearances matched your exact input (case and transliteration sensitive)")
+print(f"{counts.get(' '.join(surfacePhrase), 0)} total appearances matched your exact input (case and transliteration sensitive)")
 
 # TODO: Refine search results
 

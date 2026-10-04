@@ -58,8 +58,10 @@ def createDatabase(dbname):
     # TODO: create database and call parsing function to create table
     connection = sqlite3.connect(f"{dbname}")
     cursor = connection.cursor()
-    # filepath example: ...\UCB\nws_ShinSekai Asahi_The New World Sun\1940\05\05_01
-    # TODO: crash redundancy not working because IF NOT EXISTS prevents same named databases from being created
+    # absolute filepath example: ...\UCB\nws_ShinSekai Asahi_The New World Sun\1940\05\05_01
+    # stored filepath will only store the relative path from the root directory UCB to allow portability
+    # sorting directories should allow for deterministic id assignment for entirely distinct folders
+    # subfolders and individual file updates will not align given the previous files have already been sorted and indexed
     # tokenized texts are all stored as space separated strings with tokens position aligned
     # increases database creation time and size, but means query time no longer needs to run fugashi or pykakasi
     cursor.execute("""CREATE TABLE IF NOT EXISTS pages (
@@ -95,13 +97,19 @@ def createDatabase(dbname):
     rootLocation = os.path.join(SCRIPT_DIR, r"UCB") # smartly handles OS-dependent path creation
     cursor.execute("SELECT filepath FROM pages")
     alreadyIndexed = {row[0] for row in cursor.fetchall()} # good for re-running after a crash, skip already scanned files
+    try:
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_filepath ON pages(filepath)") #
+    except sqlite3.Error as e:
+        print(f"{dbname} contains duplicate filepath rows, so uniqueness can't be enforced. Operation aborted please perform a clean rebuild")
+        print(f"Error: {e}")
+        connection.close()
     cursor.execute("SELECT COALESCE(MAX(id), 0) FROM pages") # use explicit ID we assigned
     nextID = cursor.fetchone()[0] + 1
     batchSize = 100 # For every 100 files, upload and commit for crash safety (and while fitting in memory)
     batchPages = []
     batchFTS = []
     for row in directoryParse(rootLocation, alreadyIndexed, nextID):
-        # row = (filePath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text, tokenizedText, tokenizedRoma)
+        # row = (id, filePath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text, tokenizedText, tokenizedKana, tokenizedRoma)
         batchPages.append(row) # pages now includes all relevant tags
         batchFTS.append((row[0], row[8], row[10])) # pages_fts only receives id, tokenizedText, tokenizedRoma
         if (len(batchPages)) >= batchSize:
@@ -127,13 +135,21 @@ def directoryParse(dirRootPath, alreadyIndexed, startingID):
         print(f"'{dirRootPath}' is not a valid directory.")
         return
     currentID = startingID
+    existsSkipped = 0 # counter of already indexed files we skipped
+    metsSkipped = 0 # counter of METS files we ignored
     for dirRoot, dirName, files in os.walk(dirRootPath):
-        for fileName in files:
+        dirName.sort() # sort the dirName in place so os.walk checks each subfolder in alphabetical order
+        for fileName in sorted(files): # sorts files into alphabetical order; enables id alignment between rebuilds
             if (fileName.lower().endswith(".xml")): # requires xml filetype, ignoring files with "xml" at end of name
+                if os.path.splitext(fileName)[0].lower().endswith("_mets"): # looking at root of filename, ignore if ends with _mets
+                    metsSkipped += 1
+                    continue
                 filePath = os.path.join(dirRoot, fileName)
                 # checking if the filePath has already been inserted, if so then skip processing
-                if (filePath in alreadyIndexed):
-                    print(f"skip {filePath}")
+                relFile = os.path.relpath(filePath, dirRootPath).replace(os.sep, "/") # defines relative path from parent UCB folder
+                if (relFile in alreadyIndexed):
+                    existsSkipped += 1
+                    # print(f"skip {filePath}")
                     continue
                 # dirRoot (fuller) includes everything in path except the final filename
                 # dirRootPath (shorter) includes path up to \UCB, since we joined last that in root_location
@@ -147,9 +163,11 @@ def directoryParse(dirRootPath, alreadyIndexed, startingID):
                     print(f"Failed on {filePath}: {e}")
                     continue
                 # TODO: add validation
-                # insert file by file
-                yield (currentID, cF.filePath, cF.newspaper, cF.date, cF.pageNumber, cF.pageConfidence, cF.OCRSoftware, cF.text, cF.tokenizedText, cF.tokenizedKana, cF.tokenizedRoma) # yield generator to insert file by file
+                # insert file by file, now with relative path
+                yield (currentID, relFile, cF.newspaper, cF.date, cF.pageNumber, cF.pageConfidence, cF.OCRSoftware, cF.text, cF.tokenizedText, cF.tokenizedKana, cF.tokenizedRoma) # yield generator to insert file by file
                 currentID += 1
+    print(f"skipped {existsSkipped} files already in the database")
+    print(f"skipped {metsSkipped} METS metadata files")
 
 # insted of default adding spaces between every OCR "word," use ascii + alphanumeric check 
 # to ensure we only add spaces between latin-alphabetical words (English) and numbers
