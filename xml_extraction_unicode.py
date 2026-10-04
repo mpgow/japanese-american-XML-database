@@ -100,9 +100,9 @@ def createDatabase(dbname):
     try:
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_filepath ON pages(filepath)") #
     except sqlite3.Error as e:
-        print(f"{dbname} contains duplicate filepath rows, so uniqueness can't be enforced. Operation aborted please perform a clean rebuild")
         print(f"Error: {e}")
         connection.close()
+        raise RuntimeError(f"{dbname} contains duplicate filepath rows, so uniqueness can't be enforced. Operation aborted please perform a clean rebuild") # Stop the build
     cursor.execute("SELECT COALESCE(MAX(id), 0) FROM pages") # use explicit ID we assigned
     nextID = cursor.fetchone()[0] + 1
     batchSize = 100 # For every 100 files, upload and commit for crash safety (and while fitting in memory)
