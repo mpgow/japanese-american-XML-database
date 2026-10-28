@@ -54,8 +54,8 @@ class file:
         self.tokenizedKana = tokenizedKana   # from extractFile, stored in pages
         self.tokenizedRoma = tokenizedRoma   # from extractFile, stored in pages, indexed in pages_fts
 
+# Create database and call parsing function to create table
 def createDatabase(dbname):
-    # TODO: create database and call parsing function to create table
     connection = sqlite3.connect(f"{dbname}")
     cursor = connection.cursor()
     # absolute filepath example: ...\UCB\nws_ShinSekai Asahi_The New World Sun\1940\05\05_01
@@ -128,9 +128,8 @@ def flushToDisk(cursor, batchPages, batchFTS):
     cursor.executemany("INSERT INTO pages(id, filepath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text, tokenizedText, tokenizedKana, tokenizedRoma) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", batchPages)
     cursor.executemany("INSERT INTO pages_fts(rowid, tokenizedText, tokenizedRoma) VALUES (?, ?, ?)", batchFTS) # pages_fts is basically an index on pages
 
-
+# Loop through all newspapers, dates, and file pages to generate each full entry
 def directoryParse(dirRootPath, alreadyIndexed, startingID):
-    # TODO: loop through all newspapers, dates, and file pages to generate each full entry
     if (not os.path.isdir(dirRootPath)): 
         print(f"'{dirRootPath}' is not a valid directory.")
         return
@@ -196,11 +195,15 @@ def joinOCRChar(strings):
 def extractFile(entry, filePath):
     print(f"starting extraction of {filePath}")
     # TODO: if namespace version changes, scan fails; update to extract the ns using the root
-    ns = "{http://www.loc.gov/standards/alto/ns-v3#}" # implicit namespace before all tags
     # Take in a filepath and reads in XML data
     tree = ET.parse(filePath) # can be adjacent filename or specific filepath
     root = tree.getroot() # <alto>
     # Gather embedded metadata
+    if root.tag and "{" in root.tag[0]: # if tags start with a curly brace, it contains a namespace
+        nsEnd = root.tag.index("}")
+        ns = root.tag[:nsEnd + 1] # ns = "{http://www.loc.gov/standards/alto/ns-v3#}" implicit namespace before all tags
+    else:
+        ns = ""
     fnText = root.find(f"{ns}Description/{ns}sourceImageInformation/{ns}fileName").text # redundancy
     # TODO: May be prone to files outside of this format, double check! Update using regex
     date = fnText[6:10]+'-'+fnText[10:12]+'-'+fnText[12:14] # example: ./nws_19350805_0002.xml -> 1935-08-05
