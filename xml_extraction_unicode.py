@@ -98,7 +98,7 @@ def createDatabase(dbname):
     cursor.execute("SELECT filepath FROM pages")
     alreadyIndexed = {row[0] for row in cursor.fetchall()} # good for re-running after a crash, skip already scanned files
     try:
-        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_filepath ON pages(filepath)") #
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_filepath ON pages(filepath)") # Enforce the db we're working on has unique keys
     except sqlite3.Error as e:
         print(f"Error: {e}")
         connection.close()
@@ -109,7 +109,7 @@ def createDatabase(dbname):
     batchPages = []
     batchFTS = []
     for row in directoryParse(rootLocation, alreadyIndexed, nextID):
-        # row = (id, filePath, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text, tokenizedText, tokenizedKana, tokenizedRoma)
+        # row = (id, relFile, newspaper, date, pageNumber, pageConfidence, OCRSoftware, text, tokenizedText, tokenizedKana, tokenizedRoma)
         batchPages.append(row) # pages now includes all relevant tags
         batchFTS.append((row[0], row[8], row[10])) # pages_fts only receives id, tokenizedText, tokenizedRoma
         if (len(batchPages)) >= batchSize:
@@ -144,11 +144,10 @@ def directoryParse(dirRootPath, alreadyIndexed, startingID):
                     metsSkipped += 1
                     continue
                 filePath = os.path.join(dirRoot, fileName)
-                # checking if the filePath has already been inserted, if so then skip processing
+                # checking if the relative path has already been inserted, if so then skip processing
                 relFile = os.path.relpath(filePath, dirRootPath).replace(os.sep, "/") # defines relative path from parent UCB folder
                 if (relFile in alreadyIndexed):
                     existsSkipped += 1
-                    # print(f"skip {filePath}")
                     continue
                 # dirRoot (fuller) includes everything in path except the final filename
                 # dirRootPath (shorter) includes path up to \UCB, since we joined last that in root_location
@@ -217,8 +216,7 @@ def extractFile(entry, filePath):
     # Concatenate strings into a single text
     text = joinOCRChar([s.get("CONTENT") for s in strings]) # space separate each OCR "word"
     surfaceWords, kanaWords, romaWords = tokenizeTriplet(text) # run tagger and create all three token lists
-    # TODO: Run a tokenizer to speed up keyword searches in queries
-        # May want to address OCR corruptions first (e.g. there's no technique that re-merges text that has been
+    # TODO: May want to address OCR corruptions first (e.g. there's no technique that re-merges text that has been
         # incorrectly split by an OCR error, so a 2 char word split with whitespace is never remerged with any logic)
     # Sets all metadata, raw text (for user readability),
     # (and nested tokenized words) to be inserted into collection database 
@@ -236,4 +234,3 @@ if __name__ == "__main__":
     createDatabase("test_newspaper_vers1.db")
     # db version 0: explicitid, whitespace logic with extra punctuation, and transliteration for multisearch
     # db version 1: FULL ARCHIVES + portability, sorted id distribution, and uniqueness
-    # As I run this, I only have the tnw_ShinSekai_The New World & nws_ShinSekai Asahi_The New World Sun folders inside the relative directory \UCB
