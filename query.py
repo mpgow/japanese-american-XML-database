@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from dataclasses import dataclass, field 
 # import fugashi # moved to db creation
 # import pykakasi # moved to db creation
 # import re # for regex (not used yet)
@@ -17,6 +18,14 @@ sentenceEnd = ".。?!！"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(SCRIPT_DIR,"test_newspaper_vers1.db")
+
+# Filters determine which pages of entire database to search
+@dataclass
+class SearchFilters:
+    startYear: int # required specificity
+    endYear: int # required specificity
+    sourceList: list = field(default_factory=list) # Automatically creates new list for each SearchFilters obj
+    minConfidence: float = 0.0 # defaults to 0.0
 
 # if tokens contain quotation marks, double it to make it SQL safe for querying
 def ftsPhrase(tokens):
@@ -160,13 +169,13 @@ def collectFilters():
     return startYear, endYear, sourceList, exact, index, sensitive, pageConfidence
 
 # handle SQL filters
-def buildFilters(startYear, endYear, sourceList, minConfidence):
+def buildFilters(filters): # startYear, endYear, sourceList, minConfidence
     clauses = ["CAST(SUBSTR(p.date, 1, 4) AS INTEGER) BETWEEN ? AND ?",
                "p.pageConfidence >= ?"]
-    parameters = [startYear, endYear, minConfidence]
-    if sourceList: # None means include all newspapers
-        clauses.append(f"p.newspaper IN ({','.join('?' * len(sourceList))})")
-        parameters.extend(sourceList)
+    parameters = [filters.startYear, filters.endYear, filters.minConfidence]
+    if filters.sourceList: # None means include all newspapers
+        clauses.append(f"p.newspaper IN ({','.join('?' * len(filters.sourceList))})")
+        parameters.extend(filters.sourceList)
     return " AND ".join(clauses), parameters
 
 # TODO: Deprecate the original search method in favor of dual search version
@@ -185,7 +194,7 @@ def query(cursor, romaPhrase, surfacePhrase, startYear, endYear, sourceList, exa
         matchPhrase = lowercaseEach(matchPhrase)
 
     # Ensure index ordering with ORDER BY clause, and narrow search with year filter
-    where, parameters = buildFilters(startYear, endYear, sourceList, pageConfidence)
+    where, parameters = buildFilters(SearchFilters(startYear, endYear, sourceList, pageConfidence))
     cursor.execute(f"""SELECT p.tokenizedText, p.tokenizedRoma, p.date
                     FROM pages p JOIN pages_fts f ON p.id = f.rowid
                     WHERE f.{matchColumn} MATCH ? AND {where}
