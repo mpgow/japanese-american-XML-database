@@ -170,9 +170,11 @@ def collectFilters():
 
 # handle SQL filters
 def buildFilters(filters): # startYear, endYear, sourceList, minConfidence
-    clauses = ["CAST(SUBSTR(p.date, 1, 4) AS INTEGER) BETWEEN ? AND ?",
-               "p.pageConfidence >= ?"]
-    parameters = [filters.startYear, filters.endYear, filters.minConfidence]
+    clauses = ["CAST(SUBSTR(p.date, 1, 4) AS INTEGER) BETWEEN ? AND ?"]
+    parameters = [filters.startYear, filters.endYear]
+    if filters.minConfidence > 0:
+        clauses.append("p.pageConfidence >= ?")
+        parameters.append(filters.minConfidence)
     if filters.sourceList: # None means include all newspapers
         clauses.append(f"p.newspaper IN ({','.join('?' * len(filters.sourceList))})")
         parameters.extend(filters.sourceList)
