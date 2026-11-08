@@ -27,6 +27,12 @@ class SearchFilters:
     sourceList: list = field(default_factory=list) # Automatically creates new list for each SearchFilters obj
     minConfidence: float = 0.0 # defaults to 0.0
 
+# Options determine how phrases are matched to the selected pages
+@dataclass
+class SearchOptions:
+    exact: bool = False # True = match written form; False = match any reading form
+    sensitive: bool = False # True = case sensitive
+
 @dataclass
 class Phrase:
     surface: list # tokens as written raw, ["二世"]
@@ -60,7 +66,7 @@ def getOverview(connection):
     totalPages = connection.execute("SELECT COUNT(*) FROM pages").fetchone()[0] # one off query safe to use connection shortcut
     papers = [row[0] for row in connection.execute("SELECT DISTINCT newspaper FROM pages")]
     first, last = connection.execute("SELECT MIN(date), MAX(date) FROM pages").fetchone()
-    return {"totalPages" : totalPages, "papers" : papers, "firstDate" : first, "lastDate" : last}
+    return {"totalPages" : totalPages, "newspapers" : papers, "firstDate" : first, "lastDate" : last}
 
 # Do bilingual phrase search, so inputs can be in romaji or kanji, with case-sensitivity choice
 # inputs can be kanji, kana, romaji, or English
@@ -90,7 +96,7 @@ def inputPhrase(connection):
     # General database overview for sense of scale
     overview = getOverview(connection)
     print(f"Total pages = {overview['totalPages']}")
-    print(f"Newspapers = {overview['papers']}")
+    print(f"Newspapers = {overview['newspapers']}")
     print(f"Date range = {overview['firstDate']} to {overview['lastDate']}")
 
     # search romanized text for pages that contain the phrase, and then parse qualified pages to find exact indices and their writing to print out
@@ -136,13 +142,16 @@ def inputPhrase(connection):
     print(f"{counts.get(' '.join(surfacePhrase), 0)} total appearances matched your exact input (case and transliteration sensitive)")
     return romaPhrase, surfacePhrase
 
-# TODO: Refine search results
-def collectFilters():
+# Refine search results
+def askFilters():
     while True:
         dateRange = input("Type in a date range in the form XXXX-XXXX: ")
         startYear, endYear = dateRange[0:4], dateRange[5:] # TODO: needs more specificity for edge cases later
         if len(dateRange) == 9 and startYear.isdigit() and endYear.isdigit():
-            break
+            if int(startYear) <= int(endYear):
+                break
+            print("start year must come before end year, try again")
+            continue
         print("incorrect date format, try again")
     startYear, endYear = int(startYear), int(endYear)
 
@@ -165,25 +174,29 @@ def collectFilters():
         if 0 <= pageConfidence <= 1:
             break
         print("please check input inclusivity between 0 and 1")
+    return SearchFilters(startYear, endYear, sourceList, pageConfidence)
 
+def askOptions():
     exact = input("Transliteration Modes: { B = broad, any written form | E = exact, match spelling exactly} ")
     while exact not in ("B", "E"):
         print("input must be B or E, try again")
         exact = input("Transliteration Modes: { B = broad, any written form | E = exact, match spelling exactly} ")
     exact = (exact == "E")
 
-    index = input("Type in the numerical index of the sentence you'd like to see the phrase used in: ")
-    while (not index.isdigit()):
-        print("input must be an integer, try again")
-        index = input("Type in the numerical index of the sentence you'd like to see the phrase used in: ")
-    index = int(index)
-
     sensitive = input("Would you like to match case-sensitively? { Y | N } ")
     while (sensitive != "Y" and sensitive != "N"):
         print("input must be a single character, try again")
         sensitive = input("Would you like to match case-sensitively? { Y | N } ")
     sensitive = (sensitive == "Y")
-    return startYear, endYear, sourceList, exact, index, sensitive, pageConfidence
+    return SearchOptions(exact, sensitive)
+
+def askIndex():
+    idx = input("Type in the numerical index of the sentence you'd like to see the phrase used in: ")
+    while (not idx.isdigit()):
+        print("input must be an integer, try again")
+        idx = input("Type in the numerical index of the sentence you'd like to see the phrase used in: ")
+    idx = int(idx)
+    return idx
 
 # handle SQL filters
 def buildFilters(filters): # startYear, endYear, sourceList, minConfidence
@@ -198,7 +211,8 @@ def buildFilters(filters): # startYear, endYear, sourceList, minConfidence
     return " AND ".join(clauses), parameters
 
 # TODO: Deprecate the original search method in favor of dual search version
-def query(cursor, romaPhrase, surfacePhrase, startYear, endYear, sourceList, exact, index, sensitive, pageConfidence):
+def query(cursor, romaPhrase, surfacePhrase, filters, options, idx):
+    exact, sensitive = options.exact, options.sensitive
     # Find the exact sentence at the selected index
     # Broad "B" mode searches roma column (the superset); exact "E" mode searches the surface column (matching raw)
 
@@ -213,7 +227,7 @@ def query(cursor, romaPhrase, surfacePhrase, startYear, endYear, sourceList, exa
         matchPhrase = lowercaseEach(matchPhrase)
 
     # Ensure index ordering with ORDER BY clause, and narrow search with year filter
-    where, parameters = buildFilters(SearchFilters(startYear, endYear, sourceList, pageConfidence))
+    where, parameters = buildFilters(filters)
     cursor.execute(f"""SELECT p.tokenizedText, p.tokenizedRoma, p.date
                     FROM pages p JOIN pages_fts f ON p.id = f.rowid
                     WHERE f.{matchColumn} MATCH ? AND {where}
@@ -226,7 +240,7 @@ def query(cursor, romaPhrase, surfacePhrase, startYear, endYear, sourceList, exa
         if not sensitive:
             matchTokens = lowercaseEach(matchTokens) # only English changes, doesn't affect Japanese characters
         for i in phraseScanner(matchTokens, matchPhrase):
-            if selectedTotal == index:
+            if selectedTotal == idx:
                 sentence = []
                 # lI scans left until reaches beginning of page or the end of the last sentence
                 # rI scans right from the end of the found phrase until reaches the end of  page or the start of the next sentence 
@@ -255,7 +269,7 @@ def query(cursor, romaPhrase, surfacePhrase, startYear, endYear, sourceList, exa
         if found:
             break
     if not found:
-        print(f"only {selectedTotal} matches in that range, so index {index} is out of range") 
+        print(f"only {selectedTotal} matches in that range, so index {idx} is out of range") 
 
 def main(db = DB_PATH):
     connection = sqlite3.connect(db)
@@ -268,8 +282,10 @@ def main(db = DB_PATH):
         if result is None:
             continue
         romaPhrase, surfacePhrase = result
-        startYear, endYear, sourceList, exact, index, sensitive, pageConfidence = collectFilters()
-        query(cursor, romaPhrase, surfacePhrase, startYear, endYear, sourceList, exact, index, sensitive, pageConfidence)
+        filters = askFilters()
+        options = askOptions()
+        idx = askIndex()
+        query(cursor, romaPhrase, surfacePhrase, filters, options, idx)
         cont = input("{ Exit | Continue }: ")
         while cont not in ("Exit", "Continue"):
             cont = input("{ Exit | Continue }: ")
