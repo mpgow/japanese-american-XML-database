@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from dataclasses import dataclass, field 
+from dataclasses import dataclass, field
 # import fugashi # moved to db creation
 # import pykakasi # moved to db creation
 # import re # for regex (not used yet)
@@ -27,6 +27,11 @@ class SearchFilters:
     sourceList: list = field(default_factory=list) # Automatically creates new list for each SearchFilters obj
     minConfidence: float = 0.0 # defaults to 0.0
 
+@dataclass
+class Phrase:
+    surface: list # tokens as written raw, ["二世"]
+    roma: list # romanized tokens, position aligned
+
 # if tokens contain quotation marks, double it to make it SQL safe for querying
 def ftsPhrase(tokens):
     return '"' + ' '.join(token.replace('"', '""') for token in tokens) + '"'
@@ -44,16 +49,31 @@ def phraseScanner(tokens, phrase):
 def lowercaseEach(tokens):
     return [token.lower() for token in tokens]
 
-def inputPhrase(cursor):
-    # phrase = "明治" # example single token kanji phrase
-    phrase = input("what phrase or term are you searching for? ")
-    # TODO: Do bilingual phrase search, so inputs can be in romaji or kanji, with case-sensitivity choice
-    # inputs can be kanji, kana, romaji, or English
-    # searching romaji or English just searches the input as typed without conversions
-    surfacePhrase, kanaPhrase, romaPhrase = tokenizeTriplet(phrase)
-    if not surfacePhrase:
+def parsePhrase(text):
+    surface, kana, roma = tokenizeTriplet(text)
+    if not surface:
+        return None # no searchable tokens
+    return Phrase(surface=surface, roma=roma)
+
+# General database overview for sense of scale
+def getOverview(connection):
+    totalPages = connection.execute("SELECT COUNT(*) FROM pages").fetchone()[0] # one off query safe to use connection shortcut
+    papers = [row[0] for row in connection.execute("SELECT DISTINCT newspaper FROM pages")]
+    first, last = connection.execute("SELECT MIN(date), MAX(date) FROM pages").fetchone()
+    return {"totalPages" : totalPages, "papers" : papers, "firstDate" : first, "lastDate" : last}
+
+# Do bilingual phrase search, so inputs can be in romaji or kanji, with case-sensitivity choice
+# inputs can be kanji, kana, romaji, or English
+# searching romaji or English just searches the input as typed without conversions
+def inputPhrase(connection):
+    cursor = connection.cursor()
+    phrase = input("what phrase or term are you searching for? ") # phrase = "明治" # example single token kanji phrase
+
+    parsed = parsePhrase(phrase)
+    if parsed is None:
         print(f"{phrase} has no searchable tokens")
         return None
+    surfacePhrase, romaPhrase = parsed.surface, parsed.roma
     phraseLen = len(surfacePhrase)
     surfaceQuery = ftsPhrase(surfacePhrase)
     romaQuery = ftsPhrase(romaPhrase)
@@ -68,13 +88,10 @@ def inputPhrase(cursor):
     # fts row = (0:id, 1:tokenizedText, 2:tokenizedRoma)
 
     # General database overview for sense of scale
-    cursor.execute("SELECT COUNT(*) FROM pages")
-    print(f"Total pages = {cursor.fetchone()[0]}")
-    cursor.execute("SELECT DISTINCT newspaper FROM pages")
-    print(f"Newspapers = {[row[0] for row in cursor.fetchall()]}")
-    cursor.execute("SELECT MIN(date), MAX(date) FROM pages")
-    row = cursor.fetchone()
-    print(f"Date range = {row[0]} to {row[1]}")
+    overview = getOverview(connection)
+    print(f"Total pages = {overview['totalPages']}")
+    print(f"Newspapers = {overview['papers']}")
+    print(f"Date range = {overview['firstDate']} to {overview['lastDate']}")
 
     # search romanized text for pages that contain the phrase, and then parse qualified pages to find exact indices and their writing to print out
     cursor.execute("SELECT COUNT(*) FROM pages_fts WHERE tokenizedRoma MATCH ?", [romaQuery]) # choose phrase here e.g. 二世 : nisei
@@ -175,7 +192,7 @@ def buildFilters(filters): # startYear, endYear, sourceList, minConfidence
     if filters.minConfidence > 0:
         clauses.append("p.pageConfidence >= ?")
         parameters.append(filters.minConfidence)
-    if filters.sourceList: # None means include all newspapers
+    if filters.sourceList: # Empty list would mean include all newspapers
         clauses.append(f"p.newspaper IN ({','.join('?' * len(filters.sourceList))})")
         parameters.extend(filters.sourceList)
     return " AND ".join(clauses), parameters
@@ -247,7 +264,7 @@ def main(db = DB_PATH):
     # kks = pykakasi.kakasi()
 
     while True:
-        result = inputPhrase(cursor)
+        result = inputPhrase(connection)
         if result is None:
             continue
         romaPhrase, surfacePhrase = result
