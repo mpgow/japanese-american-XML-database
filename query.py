@@ -68,79 +68,76 @@ def getOverview(connection):
     first, last = connection.execute("SELECT MIN(date), MAX(date) FROM pages").fetchone()
     return {"totalPages" : totalPages, "newspapers" : papers, "firstDate" : first, "lastDate" : last}
 
+
+# search romanized text for pages that contain the phrase and then aggregate by year; later will parse qualified pages to find exact indices and their writing to print out
+def getYearHistogram(connection, phrase, filters):
+    where, parameters = buildFilters(filters)
+    rows = connection.execute(f"""SELECT SUBSTR(date, 1, 4) as year, COUNT(*)
+            FROM pages_fts f JOIN pages p ON f.rowid = p.id
+            WHERE f.tokenizedRoma MATCH ? AND {where}
+            GROUP BY year
+            ORDER BY year ASC""", [ftsPhrase(phrase.roma)] + parameters)
+    return rows.fetchall()
+
+# Go through the FTS qualified pages to count true occurrences
+# match indices using the romanized tokens, and then read paired surface tokens at those indices
+# this allows for broadband search and specific written form counts, without fugashi or pykakasi runs
+def getOccurrenceCounts(connection, phrase, filters):
+    where, parameters = buildFilters(filters)
+    rows = connection.execute(f"""SELECT p.tokenizedText, p.tokenizedRoma
+                                  FROM pages p JOIN pages_fts f ON p.id = f.rowid
+                                  WHERE f.tokenizedRoma MATCH ? AND {where}""",
+                                  [ftsPhrase(phrase.roma)] + parameters)
+    counts = {}
+    scanPhrase = lowercaseEach(phrase.roma)
+    phraseLen = len(phrase.surface)
+    for surfaceText, romaText in rows: # load rows of pages one at a time to manually search for occurrences
+        surfaceTokens = surfaceText.split()
+        scanTokens = lowercaseEach(romaText.split())
+        for i in phraseScanner(scanTokens, scanPhrase):
+            written = ' '.join(surfaceTokens[i:i + phraseLen])
+            counts[written] = counts.get(written, 0) + 1
+    return counts
+
+# CLI functions below contain input() and print()
+
 # Do bilingual phrase search, so inputs can be in romaji or kanji, with case-sensitivity choice
 # inputs can be kanji, kana, romaji, or English
 # searching romaji or English just searches the input as typed without conversions
-def inputPhrase(connection):
-    cursor = connection.cursor()
-    phrase = input("what phrase or term are you searching for? ") # phrase = "明治" # example single token kanji phrase
-
-    parsed = parsePhrase(phrase)
-    if parsed is None:
+def askPhrase():
+    typedPhrase = input("what phrase or term are you searching for? ") # phrase = "明治" # example single token kanji phrase
+    phrase = parsePhrase(typedPhrase)
+    if phrase is None:
         print(f"{phrase} has no searchable tokens")
         return None
-    surfacePhrase, romaPhrase = parsed.surface, parsed.roma
-    phraseLen = len(surfacePhrase)
-    surfaceQuery = ftsPhrase(surfacePhrase)
-    romaQuery = ftsPhrase(romaPhrase)
-
     # Need to take phrase, run it through tokenized Roma first to get superset's indices
     # tokenized Roma -> total hits from superset of romanized text
     # tokenizedText at the SAME index -> map of original text char : hit count
     # tokenizedText is also used to still do total occurrence count of EXACT phrase if desired
-    print(f"phrase received: {phrase}")
-    print(f"phrase tokens = {surfacePhrase} : romanized reading = {romaPhrase}")
+    print(f"phrase received: {typedPhrase}")
+    print(f"phrase tokens = {phrase.surface} : romanized reading = {phrase.roma}")
     # pages row = (0:id, 1:filePath, 2:newspaper, 3:date, 4:pageNumber, 5:pageConfidence, 6:OCRSoftware, 7:text, 8:tokenizedText, 9:tokenizedKana, 10:tokenizedRoma)
     # fts row = (0:id, 1:tokenizedText, 2:tokenizedRoma)
+    return phrase
 
-    # General database overview for sense of scale
-    overview = getOverview(connection)
+# General database overview for sense of scale
+def showOverview(overview):
     print(f"Total pages = {overview['totalPages']}")
     print(f"Newspapers = {overview['newspapers']}")
     print(f"Date range = {overview['firstDate']} to {overview['lastDate']}")
 
-    # search romanized text for pages that contain the phrase, and then parse qualified pages to find exact indices and their writing to print out
-    cursor.execute("SELECT COUNT(*) FROM pages_fts WHERE tokenizedRoma MATCH ?", [romaQuery]) # choose phrase here e.g. 二世 : nisei
-    print(f"\nFTS page count search for romanized text \"{' '.join(romaPhrase)}\": {cursor.fetchone()[0]} results") # f's implicit rowid matched with p's explicit id
-    cursor.execute("""SELECT SUBSTR(date, 1, 4) as year, COUNT(*)
-                FROM pages_fts f JOIN pages p ON f.rowid = p.id
-                WHERE f.tokenizedRoma MATCH ?
-                AND date >= '1800-01-01' AND date <= '2040-12-31'
-                GROUP BY year
-                ORDER BY year ASC""", [romaQuery])
-    print(f"\nFTS page frequency search for \"{phrase}\" results:")
-    results = cursor.fetchall()
-    if results:
-        for row in results:
-            year = row[0]
-            count = row[1]
-            print(f"Year {year}: {count} page appearances")
-    else:
-        print("No results found")
-        return None
+# Histogram counts are romaji-based FTS
+def showHistograms(rows):
+    print(f"\nFTS page count search: {sum(count for year, count in rows)} results") # drop the years since we just want total page count
+    print("FTS page frequency search results:")
+    for year, count in rows:
+        print(f"Year {year}: {count} page appearances")
 
-    # Go through the FTS qualified pages to count true occurrences
-    # match indices using the romanized tokens, and then read paired surface tokens at those indices
-    # this allows for broadband search and specific written form counts, without fugashi or pykakasi runs
-
-    print(f"\nFTS frequency search for \"{phrase}\" results")
-    cursor.execute("""SELECT p.tokenizedText, p.tokenizedRoma
-                FROM pages p JOIN pages_fts f ON p.id = f.rowid
-                WHERE f.tokenizedRoma MATCH ? 
-                """, [romaQuery]) # need custom logic for searching true appearances
-    counts = {}
-    scanPhrase = lowercaseEach(romaPhrase)
-    for surfaceText, romaText in cursor: # load rows of pages one at a time
-        surfaceTokens = surfaceText.split()
-        romaTokens = romaText.split()
-        scanTokens = lowercaseEach(romaTokens)
-        for i in phraseScanner(scanTokens, scanPhrase):
-            counts[' '.join(surfaceTokens[i:i + phraseLen])] = counts.get(' '.join(surfaceTokens[i:i + phraseLen]), 0) + 1
-    print(f"{sum(counts.values())} total appearances of shared case insensitive romanized text")
-    for pKey, pValue in counts.items():
-        print(f"{pKey}: {pValue}")
-    print(f"{counts.get(' '.join(surfacePhrase), 0)} total appearances matched your exact input (case and transliteration sensitive)")
-    return romaPhrase, surfacePhrase
+def showCounts(counts, phrase):
+    print(f"\n{sum(counts.values())} total appearances of shared case insensitive romanized text")
+    for written, n in counts.items():
+        print(f"{written}: {n}")
+    print(f"{counts.get(' '.join(phrase.surface), 0)} total appearances matched your exact input (case and transliteration sensitive)")
 
 # Refine search results
 def askFilters():
@@ -150,7 +147,7 @@ def askFilters():
         if len(dateRange) == 9 and startYear.isdigit() and endYear.isdigit():
             if int(startYear) <= int(endYear):
                 break
-            print("start year must come before end year, try again")
+            print("start year must not be after end year, try again")
             continue
         print("incorrect date format, try again")
     startYear, endYear = int(startYear), int(endYear)
@@ -278,14 +275,21 @@ def main(db = DB_PATH):
     # kks = pykakasi.kakasi()
 
     while True:
-        result = inputPhrase(connection)
-        if result is None:
+        phrase = askPhrase()
+        if phrase is None:
             continue
-        romaPhrase, surfacePhrase = result
+        showOverview(getOverview(connection))
+        allPages = SearchFilters(1800, 2040)
+        histogram = getYearHistogram(connection, phrase, allPages)
+        if not histogram:
+            print("No results found")
+            continue
+        showHistograms(histogram)
+        showCounts(getOccurrenceCounts(connection, phrase, allPages), phrase)
         filters = askFilters()
         options = askOptions()
         idx = askIndex()
-        query(cursor, romaPhrase, surfacePhrase, filters, options, idx)
+        query(cursor, phrase.roma, phrase.surface, filters, options, idx)
         cont = input("{ Exit | Continue }: ")
         while cont not in ("Exit", "Continue"):
             cont = input("{ Exit | Continue }: ")
