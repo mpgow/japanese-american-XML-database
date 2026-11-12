@@ -105,16 +105,16 @@ def getOccurrenceCounts(connection, phrase, filters):
 # inputs can be kanji, kana, romaji, or English
 # searching romaji or English just searches the input as typed without conversions
 def askPhrase():
-    typedPhrase = input("what phrase or term are you searching for? ") # phrase = "明治" # example single token kanji phrase
-    phrase = parsePhrase(typedPhrase)
+    rawPhrase = input("what phrase or term are you searching for? ") # phrase = "明治" # example single token kanji phrase
+    phrase = parsePhrase(rawPhrase)
     if phrase is None:
-        print(f"{phrase} has no searchable tokens")
+        print(f"{rawPhrase} has no searchable tokens")
         return None
     # Need to take phrase, run it through tokenized Roma first to get superset's indices
     # tokenized Roma -> total hits from superset of romanized text
     # tokenizedText at the SAME index -> map of original text char : hit count
     # tokenizedText is also used to still do total occurrence count of EXACT phrase if desired
-    print(f"phrase received: {typedPhrase}")
+    print(f"phrase received: {rawPhrase}")
     print(f"phrase tokens = {phrase.surface} : romanized reading = {phrase.roma}")
     # pages row = (0:id, 1:filePath, 2:newspaper, 3:date, 4:pageNumber, 5:pageConfidence, 6:OCRSoftware, 7:text, 8:tokenizedText, 9:tokenizedKana, 10:tokenizedRoma)
     # fts row = (0:id, 1:tokenizedText, 2:tokenizedRoma)
@@ -127,7 +127,7 @@ def showOverview(overview):
     print(f"Date range = {overview['firstDate']} to {overview['lastDate']}")
 
 # Histogram counts are romaji-based FTS
-def showHistograms(rows):
+def showHistogram(rows):
     print(f"\nFTS page count search: {sum(count for year, count in rows)} results") # drop the years since we just want total page count
     print("FTS page frequency search results:")
     for year, count in rows:
@@ -153,10 +153,10 @@ def askFilters():
     startYear, endYear = int(startYear), int(endYear)
 
     print("Options for newspapers are: jan, kam, nwd, nws, tnj, tnw") # Hard-coded these values, can extract from UNIQUE values of 'newspaper' column in pages table
-    sourceRange = input("Select newspapers if you'd like to filter them: {X Y Z... | '' }").split()
+    sourceRange = input("Select newspapers if you'd like to filter them: {X Y Z... | '' } ").split()
     while any (n not in newspapers for n in sourceRange):
         print("input must be whitespace separated newspapers")
-        sourceRange = input("Select newspapers if you'd like to filter them: {X Y Z...}").split()
+        sourceRange = input("Select newspapers if you'd like to filter them: {X Y Z...} ").split()
     sourceList = []
     for newspaper in sourceRange:
         sourceList.append(newspapers[newspaper])
@@ -273,20 +273,19 @@ def main(db = DB_PATH):
     cursor = connection.cursor()
     # tagger = fugashi.Tagger()
     # kks = pykakasi.kakasi()
+    showOverview(getOverview(connection))
 
     while True:
         phrase = askPhrase()
         if phrase is None:
             continue
-        showOverview(getOverview(connection))
-        allPages = SearchFilters(1800, 2040)
-        histogram = getYearHistogram(connection, phrase, allPages)
-        if not histogram:
-            print("No results found")
-            continue
-        showHistograms(histogram)
-        showCounts(getOccurrenceCounts(connection, phrase, allPages), phrase)
         filters = askFilters()
+        histogram = getYearHistogram(connection, phrase, filters)
+        if not histogram:
+            print("No results found for those filters")
+            continue
+        showHistogram(histogram)
+        showCounts(getOccurrenceCounts(connection, phrase, filters), phrase)
         options = askOptions()
         idx = askIndex()
         query(cursor, phrase.roma, phrase.surface, filters, options, idx)
