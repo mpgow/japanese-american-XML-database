@@ -207,70 +207,67 @@ def buildFilters(filters): # startYear, endYear, sourceList, minConfidence
         parameters.extend(filters.sourceList)
     return " AND ".join(clauses), parameters
 
-# TODO: Deprecate the original search method in favor of dual search version
-def query(cursor, romaPhrase, surfacePhrase, filters, options, idx):
-    exact, sensitive = options.exact, options.sensitive
-    # Find the exact sentence at the selected index
-    # Broad "B" mode searches roma column (the superset); exact "E" mode searches the surface column (matching raw)
-
-    phraseLen = len(surfacePhrase)
-    surfaceQuery = ftsPhrase(surfacePhrase)
-    romaQuery = ftsPhrase(romaPhrase)
-
-    matchColumn = "tokenizedText" if exact else "tokenizedRoma"
-    matchQuery = surfaceQuery if exact else romaQuery
-    matchPhrase = surfacePhrase if exact else romaPhrase
-    if not sensitive:
-        matchPhrase = lowercaseEach(matchPhrase)
-
-    # Ensure index ordering with ORDER BY clause, and narrow search with year filter
+# page by page SQL query matching, generator will pause and yield each desired match(es)
+def iterMatches(connection, phrase, filters, options):
+    matchColumn = "tokenizedText" if options.exact else "tokenizedRoma" # broad mode uses superset of roma column; exact mode uses raw text matching
+    wantPhrase = phrase.surface if options.exact else phrase.roma
+    matchPhrase = wantPhrase if options.sensitive else lowercaseEach(wantPhrase)
     where, parameters = buildFilters(filters)
-    cursor.execute(f"""SELECT p.tokenizedText, p.tokenizedRoma, p.date
-                    FROM pages p JOIN pages_fts f ON p.id = f.rowid
-                    WHERE f.{matchColumn} MATCH ? AND {where}
-                    ORDER BY p.date, p.id""", [matchQuery] + parameters)
-    selectedTotal = 0
-    found = False
-    for surfaceText, romaText, SDate in cursor:
+    rows = connection.execute(f"""SELECT p.tokenizedText, p.tokenizedRoma, p.date
+                                  FROM pages p JOIN pages_fts f ON p.id = f.rowid
+                                  WHERE f.{matchColumn} MATCH ? AND {where}
+                                  ORDER BY p.date, p.id""", [ftsPhrase(wantPhrase)] + parameters)
+    for surfaceText, romaText, date in rows:
         surfaceTokens = surfaceText.split() # the original text that will be displayed
-        matchTokens = surfaceTokens if exact else romaText.split() # the tokens our phrase will match check with
-        if not sensitive:
-            matchTokens = lowercaseEach(matchTokens) # only English changes, doesn't affect Japanese characters
+        matchTokens = surfaceTokens if options.exact else romaText.split() # the tokens our phrase will be matched against
+        if not options.sensitive:
+            matchTokens = lowercaseEach(matchTokens) # Only affects English letters, Japanese characters unaffected
         for i in phraseScanner(matchTokens, matchPhrase):
-            if selectedTotal == idx:
-                sentence = []
-                # lI scans left until reaches beginning of page or the end of the last sentence
-                # rI scans right from the end of the found phrase until reaches the end of  page or the start of the next sentence 
-                lI, rI = i - 1, i + phraseLen 
-                while lI >= 0 and surfaceTokens[lI] not in sentenceEnd: # fugashi tokenizes punctuation by itself
-                    # TODO: check if any character in the token is an ending punctuation
-                    sentence.append(surfaceTokens[lI])
-                    lI -= 1
-                sentence = sentence[::-1] # reverse sentence because we scanned from right to left
-                sentence.extend(surfaceTokens[i:i + phraseLen]) # add each token of the query phrase
-                while rI < len(surfaceTokens):
-                    sentence.append(surfaceTokens[rI])
-                    if surfaceTokens[rI] in sentenceEnd: # Need to specify more punctuation
-                        # get all consecutive ending punctuation before breaking out of the sentence
-                        if rI + 1 >= len(surfaceTokens) or surfaceTokens[rI + 1] not in sentenceEnd:
-                            break
-                    rI += 1
-                print(f"[matched as: {' '.join(surfaceTokens[i:i + phraseLen])}] {SDate}")
-                print(joinOCRChar(sentence))
-                found = True
-                break
-            selectedTotal += 1
-            print(f">>>{SDate} aka {int(SDate[0:4])} with selected total: {selectedTotal}<<<")
-            # Might want to print confidence of that specific page as a sanity point
-            # Also, want to reduce counting in terminal prints due to line scroll limits
-        if found:
-            break
-    if not found:
-        print(f"only {selectedTotal} matches in that range, so index {idx} is out of range") 
+            yield surfaceTokens, i, date
 
-def main(db = DB_PATH):
+# sentence bounding that contains the desired matched sentence tokens
+def extractSentence(surfaceTokens, i, phraseLen):
+    # lI scans left until reaches beginning of page or the end of the last sentence
+    # rI scans right from the end of the found phrase until reaches the end of page or the start of the this sentence 
+    left = []
+    lI = i - 1
+    while lI >= 0 and surfaceTokens[lI] not in sentenceEnd: # fugashi tokeknizes punctuation by itself
+        left.append(surfaceTokens[lI])
+        lI -= 1
+    sentence = left[::-1] # reverse sentence because we scanned from right to left
+    sentence.extend(surfaceTokens[i:i + phraseLen]) # add each token of the query phrase directly
+    rI = i + phraseLen
+    while rI < len(surfaceTokens):
+        sentence.append(surfaceTokens[rI])
+        if surfaceTokens[rI] in sentenceEnd: # TODO: research more end of sentence punctuation
+            if rI + 1 >= len(surfaceTokens) or surfaceTokens[rI + 1] not in sentenceEnd:
+                break # get all consecutive ending punctuation before breaking out of the sentence 
+        rI += 1
+    return sentence
+
+# counts every match by reading every candidate page in a full search
+def countMatches(connection, phrase, filters, options):
+    return sum(1 for match in iterMatches(connection, phrase, filters, options))
+
+# Finds the desired number of matches, and can start at a specific index
+# TODO: Might want to print confidence of that specific page as a sanity point
+# Avoid counting in terminal prints due to line scroll limits
+# since iterMatches returns a generator, it cannot be sliced to access specific indices, hence the use of enumerate
+def getSentences(connection, phrase, filters, options, offset=0, limit=1):
+    phraseLen = len(phrase.surface)
+    results = []
+    for n, (surfaceTokens, i, date) in enumerate(iterMatches(connection, phrase, filters, options)):
+        if n < offset: # skip until reach desired start index
+            continue
+        results.append({"matchedAs": ' '.join(surfaceTokens[i:i + phraseLen]),
+                        "date": date,
+                        "sentence": joinOCRChar(extractSentence(surfaceTokens, i, phraseLen))})
+        if len(results) >= limit:
+            break # collected the desired number of results, return them
+    return results
+
+def main(db = DB_PATH): 
     connection = sqlite3.connect(db)
-    cursor = connection.cursor()
     # tagger = fugashi.Tagger()
     # kks = pykakasi.kakasi()
     showOverview(getOverview(connection))
@@ -288,7 +285,13 @@ def main(db = DB_PATH):
         showCounts(getOccurrenceCounts(connection, phrase, filters), phrase)
         options = askOptions()
         idx = askIndex()
-        query(cursor, phrase.roma, phrase.surface, filters, options, idx)
+        hits = getSentences(connection, phrase, filters, options, offset=idx, limit=1) # wastes a full scan if idx >= total
+        if hits: # naively prints the only result we request from getSentences
+            print(f"[matched as: {hits[0]['matchedAs']}] {hits[0]['date']}")
+            print(hits[0]["sentence"])
+        else:
+            total = countMatches(connection, phrase, filters, options)
+            print(f"only {total} matches in that range, so index {idx} is out of range")
         cont = input("{ Exit | Continue }: ")
         while cont not in ("Exit", "Continue"):
             cont = input("{ Exit | Continue }: ")
