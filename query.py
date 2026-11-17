@@ -187,13 +187,13 @@ def askOptions():
     sensitive = (sensitive == "Y")
     return SearchOptions(exact, sensitive)
 
-def askIndex():
-    idx = input("Type in the numerical index of the sentence you'd like to see the phrase used in: ")
-    while (not idx.isdigit()):
-        print("input must be an integer, try again")
-        idx = input("Type in the numerical index of the sentence you'd like to see the phrase used in: ")
-    idx = int(idx)
-    return idx
+def askIndex(total):
+    prompt = f"{total} matches. Type in the numerical index (0 to {total - 1}) of the sentence you'd like to see the phrase used in: "
+    idx = input(prompt)
+    while not (idx.isdecimal() and int(idx) < total): # Enforces not superscript numbers, negatives, or anything out of bounds
+        print(f"input must be an integer from 0 to {total - 1}, try again")
+        idx = input(prompt)
+    return int(idx)
 
 # handle SQL filters
 def buildFilters(filters): # startYear, endYear, sourceList, minConfidence
@@ -207,7 +207,7 @@ def buildFilters(filters): # startYear, endYear, sourceList, minConfidence
         parameters.extend(filters.sourceList)
     return " AND ".join(clauses), parameters
 
-# page by page SQL query matching, generator will pause and yield each desired match(es)
+# page by page SQL query matching, generator will pause and yields all matches that users can decide to keep
 def iterMatches(connection, phrase, filters, options):
     matchColumn = "tokenizedText" if options.exact else "tokenizedRoma" # broad mode uses superset of roma column; exact mode uses raw text matching
     wantPhrase = phrase.surface if options.exact else phrase.roma
@@ -253,7 +253,7 @@ def countMatches(connection, phrase, filters, options):
 # TODO: Might want to print confidence of that specific page as a sanity point
 # Avoid counting in terminal prints due to line scroll limits
 # since iterMatches returns a generator, it cannot be sliced to access specific indices, hence the use of enumerate
-def getSentences(connection, phrase, filters, options, offset=0, limit=1):
+def getSentences(connection, phrase, filters, options, offset=0, limit=1): # require limit >= 1
     phraseLen = len(phrase.surface)
     results = []
     for n, (surfaceTokens, i, date) in enumerate(iterMatches(connection, phrase, filters, options)):
@@ -262,7 +262,7 @@ def getSentences(connection, phrase, filters, options, offset=0, limit=1):
         results.append({"matchedAs": ' '.join(surfaceTokens[i:i + phraseLen]),
                         "date": date,
                         "sentence": joinOCRChar(extractSentence(surfaceTokens, i, phraseLen))})
-        if len(results) >= limit:
+        if len(results) >= limit: # stop check after each append to avoid asking generator to check extra pages
             break # collected the desired number of results, return them
     return results
 
@@ -282,16 +282,20 @@ def main(db = DB_PATH):
             print("No results found for those filters")
             continue
         showHistogram(histogram)
-        showCounts(getOccurrenceCounts(connection, phrase, filters), phrase)
+        counts = getOccurrenceCounts(connection, phrase, filters)
+        showCounts(counts, phrase)
         options = askOptions()
-        idx = askIndex()
-        hits = getSentences(connection, phrase, filters, options, offset=idx, limit=1) # wastes a full scan if idx >= total
-        if hits: # naively prints the only result we request from getSentences
-            print(f"[matched as: {hits[0]['matchedAs']}] {hits[0]['date']}")
-            print(hits[0]["sentence"])
+        if not options.exact and not options.sensitive: # 1 of 4 case where we can re-use counts.values(), but requires getOccurrenceCounts & iterMatches agree in this mode
+            total = sum(counts.values())
         else:
             total = countMatches(connection, phrase, filters, options)
-            print(f"only {total} matches in that range, so index {idx} is out of range")
+        if total == 0:
+            print("No matches with those matching options")
+        else:
+            idx = askIndex(total) # enforces valid index choices
+            hits = getSentences(connection, phrase, filters, options, offset=idx, limit=1)
+            print(f"[matched as: {hits[0]['matchedAs']}] {hits[0]['date']}") # naively prints the only result we request from getSentences
+            print(hits[0]["sentence"])
         cont = input("{ Exit | Continue }: ")
         while cont not in ("Exit", "Continue"):
             cont = input("{ Exit | Continue }: ")
