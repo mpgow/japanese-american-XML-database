@@ -82,6 +82,7 @@ def getYearHistogram(connection, phrase, filters):
 # Go through the FTS qualified pages to count true occurrences
 # match indices using the romanized tokens, and then read paired surface tokens at those indices
 # this allows for broadband search and specific written form counts, without fugashi or pykakasi runs
+# options: broad + case-insensitive
 def getOccurrenceCounts(connection, phrase, filters):
     where, parameters = buildFilters(filters)
     rows = connection.execute(f"""SELECT p.tokenizedText, p.tokenizedRoma
