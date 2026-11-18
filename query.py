@@ -196,6 +196,13 @@ def askIndex(total):
         idx = input(prompt)
     return int(idx)
 
+def askContinue():
+    while True:
+        answer = input("{ Exit | Continue }: ")
+        if answer in ("Exit", "Continue"):
+            return answer
+        print("Answer must be Exit or Continue, try again")
+
 # handle SQL filters
 def buildFilters(filters): # startYear, endYear, sourceList, minConfidence
     clauses = ["CAST(SUBSTR(p.date, 1, 4) AS INTEGER) BETWEEN ? AND ?"]
@@ -271,40 +278,38 @@ def main(db = DB_PATH):
     connection = sqlite3.connect(db)
     # tagger = fugashi.Tagger()
     # kks = pykakasi.kakasi()
-    showOverview(getOverview(connection))
-
-    while True:
-        phrase = askPhrase()
-        if phrase is None:
-            continue
-        filters = askFilters()
-        histogram = getYearHistogram(connection, phrase, filters)
-        if not histogram:
-            print("No results found for those filters")
-            continue
-        showHistogram(histogram)
-        counts = getOccurrenceCounts(connection, phrase, filters)
-        showCounts(counts, phrase)
-        options = askOptions()
-        if not options.exact and not options.sensitive: # 1 of 4 case where we can re-use counts.values(), but requires getOccurrenceCounts & iterMatches agree in this mode
-            total = sum(counts.values())
-        else:
-            total = countMatches(connection, phrase, filters, options)
-        if total == 0:
-            print("No matches with those matching options")
-        else:
-            idx = askIndex(total) # enforces valid index choices
-            hits = getSentences(connection, phrase, filters, options, offset=idx, limit=1)
-            print(f"[matched as: {hits[0]['matchedAs']}] {hits[0]['date']}") # naively prints the only result we request from getSentences
-            print(hits[0]["sentence"])
-        cont = input("{ Exit | Continue }: ")
-        while cont not in ("Exit", "Continue"):
-            cont = input("{ Exit | Continue }: ")
-        if cont == "Exit":
-            connection.close()
-            return
-        else:
-            continue
+    try:
+        showOverview(getOverview(connection))
+        while True:
+            phrase = askPhrase()
+            if phrase is None:
+                continue
+            filters = askFilters()
+            histogram = getYearHistogram(connection, phrase, filters)
+            if not histogram:
+                print("No results found for those filters")
+                continue
+            showHistogram(histogram)
+            counts = getOccurrenceCounts(connection, phrase, filters)
+            showCounts(counts, phrase)
+            options = askOptions()
+            if not options.exact and not options.sensitive: # 1 of 4 case where we can re-use counts.values(), but requires getOccurrenceCounts & iterMatches agree in this mode
+                total = sum(counts.values())
+            else:
+                total = countMatches(connection, phrase, filters, options)
+            if total == 0:
+                print("No matches with those matching options")
+            else:
+                idx = askIndex(total) # enforces valid index choices
+                hits = getSentences(connection, phrase, filters, options, offset=idx, limit=1)
+                print(f"[matched as: {hits[0]['matchedAs']}] {hits[0]['date']}") # naively prints the only result we request from getSentences
+                print(hits[0]["sentence"])
+            if askContinue() == "Exit":
+                break
+    except (KeyboardInterrupt, EOFError): # Ctrl-C or Ctrl-D exits cleanly
+        print("User cancelled process")
+    finally: # always runs at end
+        connection.close()
 
 if __name__ == "__main__":
     main()
