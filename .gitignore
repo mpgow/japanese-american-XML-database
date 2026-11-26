@@ -2,5 +2,8 @@ UCB/
 *.xml
 *.db
 test.py
+time_searches.py
+time_searches_stamped.py
+profile_scan.py
 __pycache__/
 *.pyc

@@ -221,11 +221,12 @@ def iterMatches(connection, phrase, filters, options):
     wantPhrase = phrase.surface if options.exact else phrase.roma
     matchPhrase = wantPhrase if options.sensitive else lowercaseEach(wantPhrase)
     where, parameters = buildFilters(filters)
-    rows = connection.execute(f"""SELECT p.tokenizedText, p.tokenizedRoma, p.date
-                                  FROM pages p JOIN pages_fts f ON p.id = f.rowid
-                                  WHERE f.{matchColumn} MATCH ? AND {where}
-                                  ORDER BY p.date, p.id""", [ftsPhrase(wantPhrase)] + parameters)
-    for surfaceText, romaText, date in rows:
+    pageIds = connection.execute(f"""SELECT p.id
+                                     FROM pages p JOIN pages_fts f ON p.id = f.rowid
+                                     WHERE f.{matchColumn} MATCH ? AND {where}
+                                     ORDER BY p.date, p.id""", [ftsPhrase(wantPhrase)] + parameters)
+    for (pageId,) in pageIds: # unpack the iterable cursor with tuple
+        surfaceText, romaText, date = connection.execute("SELECT tokenizedText, tokenizedRoma, date FROM pages WHERE id = ?", [pageId]).fetchone() # don't touch text during previous full page-list sort query
         surfaceTokens = surfaceText.split() # the original text that will be displayed
         matchTokens = surfaceTokens if options.exact else romaText.split() # the tokens our phrase will be matched against
         if not options.sensitive:
