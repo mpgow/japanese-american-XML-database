@@ -221,18 +221,17 @@ def iterMatches(connection, phrase, filters, options):
     wantPhrase = phrase.surface if options.exact else phrase.roma
     matchPhrase = wantPhrase if options.sensitive else lowercaseEach(wantPhrase)
     where, parameters = buildFilters(filters)
-    pageIds = connection.execute(f"""SELECT p.id
-                                     FROM pages p JOIN pages_fts f ON p.id = f.rowid
-                                     WHERE f.{matchColumn} MATCH ? AND {where}
-                                     ORDER BY p.date, p.id""", [ftsPhrase(wantPhrase)] + parameters)
-    for (pageId,) in pageIds: # unpack the iterable cursor with tuple
-        surfaceText, romaText, date = connection.execute("SELECT tokenizedText, tokenizedRoma, date FROM pages WHERE id = ?", [pageId]).fetchone() # don't touch text during previous full page-list sort query
-        surfaceTokens = surfaceText.split() # the original text that will be displayed
-        matchTokens = surfaceTokens if options.exact else romaText.split() # the tokens our phrase will be matched against
+    keys = connection.execute(f"""SELECT p.id, p.date
+                                  FROM pages p JOIN pages_fts f ON p.id = f.rowid
+                                  WHERE f.{matchColumn} MATCH ? AND {where}
+                                  ORDER BY p.date, p.id""", [ftsPhrase(wantPhrase)] + parameters)
+    fetchMatchText = f"SELECT {matchColumn} FROM pages WHERE id = ?" # to read only the raw OR roma column based on what we match against
+    for (pageId, date) in keys: # unpack the iterable cursor with tuple
+        matchTokens = connection.execute(fetchMatchText, [pageId]).fetchone()[0].split() # fetch the tokens for our phrase to match against, still don't touch text during previous full page-list sort query
         if not options.sensitive:
             matchTokens = lowercaseEach(matchTokens) # Only affects English letters, Japanese characters unaffected
         for i in phraseScanner(matchTokens, matchPhrase):
-            yield surfaceTokens, i, date
+            yield pageId, i, date # displayed text is fetched later, only for shown pages
 
 # sentence bounding that contains the desired matched sentence tokens
 def extractSentence(surfaceTokens, i, phraseLen):
@@ -240,7 +239,7 @@ def extractSentence(surfaceTokens, i, phraseLen):
     # rI scans right from the end of the found phrase until reaches the end of page or the start of the this sentence 
     left = []
     lI = i - 1
-    while lI >= 0 and surfaceTokens[lI] not in sentenceEnd: # fugashi tokeknizes punctuation by itself
+    while lI >= 0 and surfaceTokens[lI] not in sentenceEnd: # fugashi tokenizes punctuation by itself
         left.append(surfaceTokens[lI])
         lI -= 1
     sentence = left[::-1] # reverse sentence because we scanned from right to left
@@ -265,9 +264,13 @@ def countMatches(connection, phrase, filters, options):
 def getSentences(connection, phrase, filters, options, offset=0, limit=1): # require limit >= 1
     phraseLen = len(phrase.surface)
     results = []
-    for n, (surfaceTokens, i, date) in enumerate(iterMatches(connection, phrase, filters, options)):
+    cachedId, surfaceTokens = None, None # consecutive matches on same page reuse one read and one split
+    for n, (pageId, i, date) in enumerate(iterMatches(connection, phrase, filters, options)):
         if n < offset: # skip until reach desired start index
             continue
+        if pageId != cachedId: # the display text is only read for actually shown pages, and can re-use pages with multiple occurrences
+            surfaceTokens = connection.execute("SELECT tokenizedText FROM pages WHERE id = ?", [pageId]).fetchone()[0].split()
+            cachedId = pageId
         results.append({"matchedAs": ' '.join(surfaceTokens[i:i + phraseLen]),
                         "date": date,
                         "sentence": joinOCRChar(extractSentence(surfaceTokens, i, phraseLen))})
